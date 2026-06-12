@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>D2C Command Center</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3e;
+    --text: #e2e8f0; --muted: #8892a4; --accent: #6366f1;
+    --green: #10b981; --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; min-height: 100vh; }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; font-weight: 700; color: var(--accent); letter-spacing: -0.5px; }
+  header .last-refresh { font-size: 12px; color: var(--muted); }
+  nav { display: flex; gap: 4px; padding: 16px 24px 0; }
+  nav button { background: none; border: 1px solid var(--border); color: var(--muted); padding: 7px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; transition: all .15s; }
+  nav button.active, nav button:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .page { display: none; padding: 24px; }
+  .page.active { display: block; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .kpi .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .kpi .value { font-size: 28px; font-weight: 700; margin: 6px 0 2px; }
+  .kpi .sub { font-size: 12px; color: var(--muted); }
+  .kpi.green .value { color: var(--green); }
+  .kpi.red .value { color: var(--red); }
+  .kpi.yellow .value { color: var(--yellow); }
+  .kpi.blue .value { color: var(--blue); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 16px; color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; }
+  td { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.04); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(99,102,241,.05); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .badge.confirmed { background: rgba(59,130,246,.15); color: var(--blue); }
+  .badge.rtd { background: rgba(245,158,11,.15); color: var(--yellow); }
+  .badge.dispatched { background: rgba(99,102,241,.15); color: var(--accent); }
+  .badge.delivered { background: rgba(16,185,129,.15); color: var(--green); }
+  .badge.rto { background: rgba(239,68,68,.15); color: var(--red); }
+  .badge.cancelled { background: rgba(100,116,139,.15); color: var(--muted); }
+  .badge.cod { background: rgba(245,158,11,.1); color: var(--yellow); }
+  .badge.prepaid { background: rgba(16,185,129,.1); color: var(--green); }
+  .trigger-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+  .btn { background: var(--accent); color: #fff; border: none; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; transition: opacity .15s; }
+  .btn:hover { opacity: .85; }
+  .btn.secondary { background: var(--card); border: 1px solid var(--border); color: var(--text); }
+  .btn.danger { background: var(--red); }
+  .btn.success { background: var(--green); }
+  .loading { color: var(--muted); font-size: 13px; text-align: center; padding: 40px; }
+  .rto-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .rto-fill { height: 100%; border-radius: 3px; background: var(--red); }
+  @media (max-width: 768px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ D2C Command Center</h1>
+  <div style="display:flex;align-items:center;gap:16px">
+    <span class="last-refresh" id="lastRefresh">Loading...</span>
+    <button class="btn secondary" onclick="refreshAll()">↺ Refresh</button>
+  </div>
+</header>
+
+<nav>
+  <button class="active" onclick="showPage('overview')">Overview</button>
+  <button onclick="showPage('orders')">Orders</button>
+  <button onclick="showPage('inventory')">Inventory</button>
+  <button onclick="showPage('profit')">Profit/SKU</button>
+  <button onclick="showPage('logs')">Logs</button>
+  <button onclick="showPage('triggers')">Triggers</button>
+</nav>
+
+<!-- ============ OVERVIEW ============ -->
+<div id="overview" class="page active">
+  <div class="kpi-grid" id="kpiGrid"><div class="loading">Loading KPIs...</div></div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Orders by Channel (Last 30 Days)</h3>
+      <canvas id="channelChart" height="200"></canvas>
+    </div>
+    <div class="card">
+      <h3>Daily GMV (₹)</h3>
+      <canvas id="gmvChart" height="200"></canvas>
+    </div>
+  </div>
+  <div class="card">
+    <h3>RTO Hotspots (Top 10 Pincodes)</h3>
+    <table id="hotspotTable"><tr><td class="loading">Loading...</td></tr></table>
+  </div>
+</div>
+
+<!-- ============ ORDERS ============ -->
+<div id="orders" class="page">
+  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <select id="orderStatusFilter" onchange="loadOrders()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:8px;font-size:13px">
+      <option value="">All Statuses</option>
+      <option value="pending">Pending</option>
+      <option value="confirmed">Confirmed</option>
+      <option value="rtd">Ready to Dispatch</option>
+      <option value="dispatched">Dispatched</option>
+      <option value="delivered">Delivered</option>
+      <option value="rto">RTO</option>
+      <option value="cancelled">Cancelled</option>
+    </select>
+    <select id="orderChannelFilter" onchange="loadOrders()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:8px;font-size:13px">
+      <option value="">All Channels</option>
+      <option value="amazon">Amazon</option>
+      <option value="flipkart">Flipkart</option>
+      <option value="meesho">Meesho</option>
+      <option value="myntra">Myntra</option>
+      <option value="shopify">Shopify</option>
+    </select>
+  </div>
+  <div class="card" style="overflow-x:auto">
+    <table id="ordersTable"><tr><td class="loading">Loading orders...</td></tr></table>
+  </div>
+</div>
+
+<!-- ============ INVENTORY ============ -->
+<div id="inventory" class="page">
+  <div class="card" style="overflow-x:auto">
+    <table id="inventoryTable"><tr><td class="loading">Loading inventory...</td></tr></table>
+  </div>
+</div>
+
+<!-- ============ PROFIT ============ -->
+<div id="profit" class="page">
+  <div class="card" style="overflow-x:auto">
+    <table id="profitTable"><tr><td class="loading">Loading profit data...</td></tr></table>
+  </div>
+</div>
+
+<!-- ============ LOGS ============ -->
+<div id="logs" class="page">
+  <div style="display:flex;gap:10px;margin-bottom:16px">
+    <select id="logStatusFilter" onchange="loadLogs()" style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:8px;font-size:13px">
+      <option value="">All</option>
+      <option value="failed">Errors Only</option>
+      <option value="success">Success</option>
+    </select>
+  </div>
+  <div class="card" style="overflow-x:auto">
+    <table id="logsTable"><tr><td class="loading">Loading logs...</td></tr></table>
+  </div>
+</div>
+
+<!-- ============ TRIGGERS ============ -->
+<div id="triggers" class="page">
+  <div class="card" style="max-width:600px">
+    <h3 style="margin-bottom:20px">Manual Triggers</h3>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px;background:rgba(255,255,255,.03);border-radius:8px;border:1px solid var(--border)">
+        <div><div style="font-size:14px;font-weight:500">Ingest All Channels</div><div style="font-size:12px;color:var(--muted)">Pull orders from Amazon, Flipkart, Meesho, Myntra, Shopify</div></div>
+        <button class="btn" onclick="trigger('ingest')">Run</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px;background:rgba(255,255,255,.03);border-radius:8px;border:1px solid var(--border)">
+        <div><div style="font-size:14px;font-weight:500">Run Order Automations</div><div style="font-size:12px;color:var(--muted)">RTD detection, COD confirm, RTO scoring, dispatch alerts</div></div>
+        <button class="btn" onclick="trigger('order-automations')">Run</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px;background:rgba(255,255,255,.03);border-radius:8px;border:1px solid var(--border)">
+        <div><div style="font-size:14px;font-weight:500">Auto-Ship RTD Orders</div><div style="font-size:12px;color:var(--muted)">Create Shiprocket shipments for all RTD orders</div></div>
+        <button class="btn success" onclick="trigger('auto-ship')">Run</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px;background:rgba(255,255,255,.03);border-radius:8px;border:1px solid var(--border)">
+        <div><div style="font-size:14px;font-weight:500">Inventory Sync</div><div style="font-size:12px;color:var(--muted)">Push live inventory to all channels, check low stock</div></div>
+        <button class="btn secondary" onclick="trigger('inventory-sync')">Run</button>
+      </div>
+    </div>
+    <div id="triggerResult" style="margin-top:16px;padding:12px;background:rgba(16,185,129,.08);border-radius:8px;border:1px solid rgba(16,185,129,.2);font-size:13px;display:none"></div>
+  </div>
+</div>
+
+<script>
+const API = '';  // same origin
+
+// ─── Navigation ───────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById(name).classList.add('active');
+  event.target.classList.add('active');
+  if (name === 'orders') loadOrders();
+  if (name === 'inventory') loadInventory();
+  if (name === 'profit') loadProfit();
+  if (name === 'logs') loadLogs();
+}
+
+// ─── Overview ────────────────────────────────────────────────────
+let channelChart, gmvChart;
+
+async function loadOverview() {
+  const data = await fetch(`${API}/api/dashboard/summary`).then(r => r.json());
+  const daily = data.daily || [];
+  const rtd = data.pending_rtd || 0;
+  const hotspots = data.rto_hotspots || [];
+
+  // KPIs (today + all time)
+  const today = daily[0] || {};
+  const totals = daily.reduce((a, r) => ({
+    orders: a.orders + (r.total_orders||0),
+    gmv: a.gmv + parseFloat(r.gmv||0),
+    rto: a.rto + (r.rto||0),
+    delivered: a.delivered + (r.delivered||0),
+  }), {orders:0, gmv:0, rto:0, delivered:0});
+  const rtoRate = totals.orders ? ((totals.rto / totals.orders)*100).toFixed(1) : 0;
+  const fillRate = totals.orders ? ((totals.delivered / totals.orders)*100).toFixed(1) : 0;
+
+  document.getElementById('kpiGrid').innerHTML = `
+    <div class="kpi blue"><div class="label">Total Orders (30d)</div><div class="value">${totals.orders}</div><div class="sub">All channels</div></div>
+    <div class="kpi green"><div class="label">GMV (30d)</div><div class="value">₹${(totals.gmv/1000).toFixed(1)}k</div><div class="sub">Gross revenue</div></div>
+    <div class="kpi yellow"><div class="label">Pending RTD</div><div class="value">${rtd}</div><div class="sub">Need dispatch now</div></div>
+    <div class="kpi red"><div class="label">RTO Rate (30d)</div><div class="value">${rtoRate}%</div><div class="sub">${totals.rto} orders returned</div></div>
+    <div class="kpi green"><div class="label">Fulfillment Rate</div><div class="value">${fillRate}%</div><div class="sub">Orders delivered</div></div>
+    <div class="kpi"><div class="label">Today Orders</div><div class="value">${today.total_orders||0}</div><div class="sub">₹${(parseFloat(today.gmv||0)/1000).toFixed(1)}k GMV</div></div>
+  `;
+
+  // Channel chart
+  const channelTotals = {};
+  daily.forEach(r => { channelTotals[r.channel] = (channelTotals[r.channel]||0) + (r.total_orders||0); });
+  if (channelChart) channelChart.destroy();
+  channelChart = new Chart(document.getElementById('channelChart'), {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(channelTotals),
+      datasets: [{ data: Object.values(channelTotals), backgroundColor: ['#6366f1','#3b82f6','#10b981','#f59e0b','#ef4444'], borderWidth: 0 }]
+    },
+    options: { plugins: { legend: { labels: { color: '#8892a4', font: { size: 12 } } } } }
+  });
+
+  // GMV chart (last 14 days)
+  const last14 = [...new Set(daily.map(r => r.date))].slice(0,14).reverse();
+  const gmvByDate = {};
+  daily.forEach(r => { gmvByDate[r.date] = (gmvByDate[r.date]||0) + parseFloat(r.gmv||0); });
+  if (gmvChart) gmvChart.destroy();
+  gmvChart = new Chart(document.getElementById('gmvChart'), {
+    type: 'bar',
+    data: {
+      labels: last14.map(d => d.slice(5)),
+      datasets: [{ label: '₹ GMV', data: last14.map(d => gmvByDate[d]||0), backgroundColor: '#6366f1', borderRadius: 4 }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3e' } }, y: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3e' } } } }
+  });
+
+  // Hotspot table
+  const hRows = hotspots.map(h => `
+    <tr>
+      <td>${h.pincode}</td><td>${h.state||'-'}</td>
+      <td>${h.total_orders}</td>
+      <td><div style="display:flex;align-items:center;gap:8px"><div class="rto-bar" style="width:80px"><div class="rto-fill" style="width:${Math.min(h.rto_rate_pct,100)}%"></div></div><span style="color:var(--red)">${h.rto_rate_pct}%</span></div></td>
+    </tr>`).join('');
+  document.getElementById('hotspotTable').innerHTML = `
+    <thead><tr><th>Pincode</th><th>State</th><th>Total Orders</th><th>RTO Rate</th></tr></thead>
+    <tbody>${hRows || '<tr><td colspan=4 style="color:var(--muted);text-align:center;padding:20px">No hotspot data yet</td></tr>'}</tbody>`;
+}
+
+// ─── Orders ───────────────────────────────────────────────────────
+async function loadOrders() {
+  const status = document.getElementById('orderStatusFilter').value;
+  const channel = document.getElementById('orderChannelFilter').value;
+  let url = `${API}/api/orders?limit=100`;
+  if (status) url += `&status=${status}`;
+  if (channel) url += `&channel=${channel}`;
+  const orders = await fetch(url).then(r => r.json());
+  const rows = orders.map(o => `
+    <tr>
+      <td style="font-family:monospace;font-size:11px">${o.channel_order_id}</td>
+      <td><span class="badge ${o.channel}">${o.channel}</span></td>
+      <td><span class="badge ${o.status}">${o.status}</span></td>
+      <td><span class="badge ${o.payment_mode}">${o.payment_mode||'-'}</span></td>
+      <td>${o.customer_name||'-'}</td>
+      <td>${o.pincode||'-'}</td>
+      <td style="color:var(--green)">₹${parseFloat(o.total_amount||0).toFixed(0)}</td>
+      <td style="font-size:11px;color:var(--muted)">${o.awb||'-'}</td>
+      <td style="font-size:11px;color:var(--muted)">${new Date(o.created_at).toLocaleDateString('en-IN')}</td>
+    </tr>`).join('');
+  document.getElementById('ordersTable').innerHTML = `
+    <thead><tr><th>Order ID</th><th>Channel</th><th>Status</th><th>Payment</th><th>Customer</th><th>Pincode</th><th>Amount</th><th>AWB</th><th>Date</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan=9 style="color:var(--muted);text-align:center;padding:20px">No orders found</td></tr>'}</tbody>`;
+}
+
+// ─── Inventory ───────────────────────────────────────────────────
+async function loadInventory() {
+  const inv = await fetch(`${API}/api/inventory`).then(r => r.json());
+  const rows = inv.map(r => {
+    const avail = r.qty_available || 0;
+    const color = avail <= 0 ? 'var(--red)' : avail <= 10 ? 'var(--yellow)' : 'var(--green)';
+    return `<tr>
+      <td style="font-family:monospace">${r.sku}</td>
+      <td>${(r.skus||{}).name||'-'}</td>
+      <td>${(r.skus||{}).category||'-'}</td>
+      <td>${r.qty_on_hand||0}</td>
+      <td>${r.qty_reserved||0}</td>
+      <td style="color:${color};font-weight:600">${avail}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('inventoryTable').innerHTML = `
+    <thead><tr><th>SKU</th><th>Name</th><th>Category</th><th>On Hand</th><th>Reserved</th><th>Available</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan=6 style="color:var(--muted);text-align:center;padding:20px">No inventory data</td></tr>'}</tbody>`;
+}
+
+// ─── Profit ───────────────────────────────────────────────────────
+async function loadProfit() {
+  const data = await fetch(`${API}/api/dashboard/profit`).then(r => r.json());
+  const rows = data.map(r => {
+    const profit = parseFloat(r.estimated_profit||0);
+    const color = profit >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<tr>
+      <td style="font-family:monospace">${r.sku}</td>
+      <td>${r.name||'-'}</td>
+      <td>${r.units_sold||0}</td>
+      <td>₹${parseFloat(r.gross_revenue||0).toFixed(0)}</td>
+      <td>₹${parseFloat(r.total_cogs||0).toFixed(0)}</td>
+      <td>₹${parseFloat(r.total_marketplace_fees||0).toFixed(0)}</td>
+      <td>₹${parseFloat(r.total_shipping||0).toFixed(0)}</td>
+      <td style="color:${color};font-weight:700">₹${profit.toFixed(0)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('profitTable').innerHTML = `
+    <thead><tr><th>SKU</th><th>Name</th><th>Units Sold</th><th>Revenue</th><th>COGS</th><th>Mkt Fee</th><th>Shipping</th><th>Profit</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan=8 style="color:var(--muted);text-align:center;padding:20px">No profit data yet</td></tr>'}</tbody>`;
+}
+
+// ─── Logs ────────────────────────────────────────────────────────
+async function loadLogs() {
+  const status = document.getElementById('logStatusFilter').value;
+  let url = `${API}/api/logs?limit=200`;
+  if (status) url += `&status=${status}`;
+  const logs = await fetch(url).then(r => r.json());
+  const rows = logs.map(l => `
+    <tr>
+      <td style="font-size:11px;color:var(--muted)">${new Date(l.created_at).toLocaleString('en-IN')}</td>
+      <td style="font-family:monospace;font-size:12px">${l.event_type}</td>
+      <td>${l.entity_type||'-'}</td>
+      <td style="font-family:monospace;font-size:11px">${(l.entity_id||'').substring(0,20)}</td>
+      <td><span class="badge ${l.status==='failed'?'rto':'delivered'}">${l.status}</span></td>
+      <td style="font-size:12px;color:var(--muted);max-width:300px;overflow:hidden;text-overflow:ellipsis">${l.message||''}</td>
+    </tr>`).join('');
+  document.getElementById('logsTable').innerHTML = `
+    <thead><tr><th>Time</th><th>Event</th><th>Type</th><th>Entity</th><th>Status</th><th>Message</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan=6 style="color:var(--muted);text-align:center;padding:20px">No logs found</td></tr>'}</tbody>`;
+}
+
+// ─── Triggers ────────────────────────────────────────────────────
+async function trigger(name) {
+  const el = document.getElementById('triggerResult');
+  el.style.display = 'block';
+  el.textContent = `Running ${name}...`;
+  try {
+    const res = await fetch(`${API}/trigger/${name}`, { method: 'POST' }).then(r => r.json());
+    el.textContent = `✓ Done: ${JSON.stringify(res, null, 2)}`;
+  } catch (e) {
+    el.style.background = 'rgba(239,68,68,.08)';
+    el.style.borderColor = 'rgba(239,68,68,.2)';
+    el.textContent = `✗ Error: ${e.message}`;
+  }
+}
+
+// ─── Refresh all ─────────────────────────────────────────────────
+function refreshAll() {
+  loadOverview();
+  document.getElementById('lastRefresh').textContent = `Last refresh: ${new Date().toLocaleTimeString('en-IN')}`;
+}
+
+// Auto-refresh every 5 minutes
+refreshAll();
+setInterval(refreshAll, 5 * 60 * 1000);
+</script>
+</body>
+</html>

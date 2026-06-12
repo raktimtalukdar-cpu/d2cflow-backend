@@ -1,0 +1,137 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Razorpay design tokens */
+  --sidebar-bg: #0D111B;
+  --sidebar-hover: #161C2D;
+  --sidebar-active: #1E2640;
+  --sidebar-border: rgba(255,255,255,0.06);
+  --sidebar-text: #7A8499;
+  --sidebar-text-active: #E8ECF4;
+  --sidebar-width: 240px;
+
+  --bg: #F4F6FA;
+  --surface: #FFFFFF;
+  --surface-2: #F7F8FA;
+  --border: #E8ECF4;
+  --border-strong: #CDD5E0;
+
+  --text-primary: #0D111B;
+  --text-secondary: #687385;
+  --text-disabled: #A3ADBF;
+
+  --blue: #3395FF;
+  --blue-light: #EBF4FF;
+  --blue-dark: #1A6FCC;
+
+  --green: #16A249;
+  --green-light: #E6F4EC;
+  --orange: #D97706;
+  --orange-light: #FEF3C7;
+  --red: #DC2626;
+  --red-light: #FEE2E2;
+  --purple: #7C3AED;
+  --purple-light: #EDE9FE;
+
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-lg: 12px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
+  --shadow-lg: 0 10px 40px rgba(0,0,0,0.15);
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: 'DM Sans', -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; cursor: pointer; border: none; outline: none; }
+input, select, textarea { font-family: inherit; outline: none; }
+a { text-decoration: none; color: inherit; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-disabled); }
+
+.badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 2px 7px; border-radius: 20px; font-size: 11px; font-weight: 600;
+  white-space: nowrap;
+}
+.badge-new { background: var(--green-light); color: var(--green); }
+.badge-packed { background: var(--orange-light); color: var(--orange); }
+.badge-shipped { background: var(--blue-light); color: var(--blue); }
+.badge-delivered { background: #D1FAE5; color: #065F46; }
+.badge-rto { background: var(--red-light); color: var(--red); }
+.badge-cancelled { background: #F1F3F7; color: var(--text-secondary); }
+.badge-rtd { background: var(--purple-light); color: var(--purple); }
+.badge-cod { background: #FEF3C7; color: #92400E; }
+.badge-prepaid { background: var(--green-light); color: var(--green); }
+
+.channel-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px; border-radius: var(--radius-sm);
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.ch-amazon { background: #FFF3E0; color: #E65100; }
+.ch-flipkart { background: #E8F5E9; color: #2E7D32; }
+.ch-meesho { background: #FCE4EC; color: #880E4F; }
+.ch-myntra { background: #F3E5F5; color: #4A148C; }
+.ch-shopify { background: #E8F5E9; color: #1B5E20; }
+.ch-whatsapp { background: #E8F5E9; color: #1B5E20; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: var(--radius); font-size: 13px;
+  font-weight: 500; transition: all 0.15s; white-space: nowrap;
+}
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-primary:hover { background: var(--blue-dark); }
+.btn-secondary { background: var(--surface); color: var(--text-primary); border: 1px solid var(--border-strong); }
+.btn-secondary:hover { background: var(--surface-2); }
+.btn-danger { background: var(--red-light); color: var(--red); }
+.btn-danger:hover { background: #FECACA; }
+.btn-success { background: var(--green-light); color: var(--green); }
+.btn-success:hover { background: #BBF7D0; }
+.btn-ghost { background: transparent; color: var(--text-secondary); padding: 6px 8px; }
+.btn-ghost:hover { background: var(--surface-2); color: var(--text-primary); }
+.btn-icon { padding: 6px; border-radius: var(--radius-sm); }
+
+.form-input {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius); font-size: 13px; color: var(--text-primary);
+  background: var(--surface); transition: border-color 0.15s;
+}
+.form-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(51,149,255,0.12); }
+.form-select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23687385' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; padding-right: 28px; }
+
+.table { width: 100%; border-collapse: collapse; }
+.table th { text-align: left; padding: 10px 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.table td { padding: 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.table tbody tr:hover { background: var(--blue-light); }
+.table tbody tr:last-child td { border-bottom: none; }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+
+.divider { height: 1px; background: var(--border); }
+
+.tooltip { position: relative; }
+.tooltip:hover::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 6px); left: 50%;
+  transform: translateX(-50%); background: var(--text-primary); color: #fff;
+  padding: 4px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;
+  pointer-events: none; z-index: 100;
+}
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
+.animate-in { animation: fadeIn 0.2s ease; }
