@@ -13,6 +13,9 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const BillingPage = lazy(() => import('./pages/BillingPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const SignupPage = lazy(() => import('./pages/SignupPage'));
+const WhatsAppOrdersPage = lazy(() => import('./pages/WhatsAppOrdersPage'));
+const CRMPage = lazy(() => import('./pages/CRMPage'));
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 
 function PlaceholderPage({ title, description }) {
   return (
@@ -194,6 +197,8 @@ function Dashboard() {
     switch (page) {
       case 'home': return <HomePage onNavigate={setPage} />;
       case 'orders': return <OrdersPage />;
+      case 'whatsapp-orders': return <WhatsAppOrdersPage />;
+      case 'crm': return <CRMPage />;
       case 'shipping': return <ShippingPage />;
       case 'automations': return <AutomationsPage />;
       case 'integrations': return <IntegrationsPage />;
@@ -201,7 +206,7 @@ function Dashboard() {
       case 'billing': return <BillingPage />;
       case 'products': return <ProductsPage />;
       case 'returns': return <PlaceholderPage title="Returns & RTO" description="Return management, courier claims, and RTO analytics — Phase 2." />;
-      case 'analytics': return <PlaceholderPage title="Analytics" description="Profit per SKU, RTO heatmaps, channel performance — Phase 2." />;
+      case 'analytics': return <AnalyticsPage />;
       default: return <PlaceholderPage title={page} />;
     }
   };

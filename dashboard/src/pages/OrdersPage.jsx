@@ -1,7 +1,15 @@
 import { useState, useCallback } from 'react';
-import { getOrders, addOrder } from '../data/orders';
+import { getOrders, addOrder, updateOrder } from '../data/orders';
 import { toast } from '../components/Toast';
 import { getProducts, decrementStock } from '../data/products';
+
+const BACKEND = import.meta.env.VITE_API_URL || '';
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(`${BACKEND}${path}`, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
+}
 
 function buildStatusTree(orders) {
   return [
@@ -220,7 +228,10 @@ function AddOrderModal({ onClose, onNavigate }) {
 }
 
 function OrderRow({ order, selected, onSelect, onClick }) {
-  const sb = STATUS_BADGE[order.status] || { label: order.status, cls: '' };
+  const sb = STATUS_BADGE[order.status] || { label: order.status || 'unknown', cls: '' };
+  const items = order.items || [];
+  const total = Number(order.total ?? order.price ?? 0);
+
   return (
     <tr onClick={onClick} style={{ cursor: 'pointer' }}>
       <td style={{ padding: '8px 12px', width: 36 }}>
@@ -232,36 +243,38 @@ function OrderRow({ order, selected, onSelect, onClick }) {
         </button>
       </td>
       <td style={{ padding: '8px 12px', minWidth: 100 }}>
-        <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--blue)', fontFamily: 'monospace' }}>{order.id.replace('ORD-', '')}</div>
+        <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--blue)', fontFamily: 'monospace' }}>{(order.id || '').replace('ORD-', '')}</div>
         <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: 2 }}>{order.date}</div>
       </td>
       <td style={{ padding: '8px 12px', minWidth: 140 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <ChannelBadge ch={order.channel} />
           <div>
-            <div style={{ fontWeight: 500, fontSize: '13px' }}>{order.customer}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{order.city}, {order.pincode}</div>
+            <div style={{ fontWeight: 500, fontSize: '13px' }}>{order.customer || '—'}</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{order.city || '—'}, {order.pincode || '—'}</div>
           </div>
         </div>
       </td>
       <td style={{ padding: '8px 12px', maxWidth: 280 }}>
-        {order.items.slice(0, 2).map((item, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: i < order.items.length - 1 ? 6 : 0 }}>
-            <ProductThumb name={item.name} />
-            <div style={{ overflow: 'hidden' }}>
-              <div style={{ fontSize: '12px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }}>{item.name}</div>
-              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>SKU: {item.sku} · EAN: {item.ean}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{item.qty}× ₹{item.price.toLocaleString('en-IN')}</div>
+        {items.length === 0
+          ? <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>—</span>
+          : items.slice(0, 2).map((item, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: i < items.length - 1 ? 6 : 0 }}>
+              <ProductThumb name={item.name || '?'} />
+              <div style={{ overflow: 'hidden' }}>
+                <div style={{ fontSize: '12px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }}>{item.name || '—'}</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>SKU: {item.sku || '—'} · EAN: {item.ean || '—'}</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{item.qty || 1}× ₹{Number(item.price ?? item.unit_price ?? 0).toLocaleString('en-IN')}</div>
+              </div>
             </div>
-          </div>
-        ))}
-        {order.items.length > 2 && <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: 4 }}>+{order.items.length - 2} more item(s)</div>}
+          ))}
+        {items.length > 2 && <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: 4 }}>+{items.length - 2} more item(s)</div>}
       </td>
       <td style={{ padding: '8px 12px', width: 80 }}>
-        <span className={`badge ${order.payment === 'cod' ? 'badge-cod' : 'badge-prepaid'}`}>{order.payment?.toUpperCase()}</span>
+        <span className={`badge ${order.payment === 'cod' ? 'badge-cod' : 'badge-prepaid'}`}>{(order.payment || 'prepaid').toUpperCase()}</span>
       </td>
       <td style={{ padding: '8px 12px', width: 100 }}>
-        <div style={{ fontWeight: 700, fontSize: '14px' }}>₹{order.total.toLocaleString('en-IN')}</div>
+        <div style={{ fontWeight: 700, fontSize: '14px' }}>₹{total.toLocaleString('en-IN')}</div>
         <span className={`badge ${sb.cls}`} style={{ marginTop: 3 }}>{sb.label}</span>
       </td>
       <td style={{ padding: '8px 12px', width: 120 }}>
@@ -276,12 +289,164 @@ function OrderRow({ order, selected, onSelect, onClick }) {
   );
 }
 
-function OrderDetail({ order, onClose }) {
+function OrderDetail({ order: initialOrder, onClose, onOrderUpdated }) {
+  const [order, setOrder] = useState(initialOrder);
+  const [shipStep, setShipStep] = useState('idle'); // idle | confirm | loading | done | error
+  const [shipResult, setShipResult] = useState(null);
+  const [shipError, setShipError] = useState('');
+  const [weight, setWeight] = useState(0.5);
+  const [pickupLocation, setPickupLocation] = useState('Home');
+  const [payStep, setPayStep] = useState('idle'); // idle | loading | done | error
+  const [payResult, setPayResult] = useState(null);
+  const [payError, setPayError] = useState('');
+
+  // Editable shipping address fields — pre-filled from order, user can fix before shipping
+  const [shipAddr, setShipAddr] = useState({
+    name:    initialOrder.customer || '',
+    phone:   String(initialOrder.phone || '').replace(/\D/g, ''),
+    address: initialOrder.address || '',
+    city:    initialOrder.city !== '—' ? (initialOrder.city || '') : '',
+    state:   initialOrder.state !== '—' ? (initialOrder.state || '') : '',
+    pincode: initialOrder.pincode !== '—' ? (initialOrder.pincode || '') : '',
+  });
+  const setAddr = k => e => setShipAddr(a => ({ ...a, [k]: e.target.value }));
+
+  const items = order.items || [];
+  const total = Number(order.total ?? order.price ?? 0);
+
+  const handleCreatePaymentLink = async () => {
+    if (!total || total <= 0) { toast.error('Order has no amount — cannot create payment link'); return; }
+    const phone = String(order.phone || '').replace(/\D/g, '');
+    if (!phone || phone.length < 10) { toast.error('Valid customer phone number required'); return; }
+
+    setPayStep('loading');
+    setPayError('');
+    try {
+      // Determine WhatsApp JID for sending the link
+      const jid = phone.length === 12 ? `${phone}@s.whatsapp.net`
+        : phone.length === 10 ? `91${phone}@s.whatsapp.net`
+        : `${phone}@s.whatsapp.net`;
+
+      const data = await apiFetch('/api/payments/create-link', {
+        method: 'POST',
+        body: JSON.stringify({
+          order_id: order.id,
+          amount: total,
+          customer_name: order.customer || 'Customer',
+          customer_phone: phone,
+          customer_email: order.email || '',
+          description: `Payment for ${items[0]?.name || 'your order'}`,
+          send_whatsapp: true,
+          whatsapp_jid: jid,
+        }),
+      });
+      setPayResult(data);
+      setPayStep('done');
+      // Save payment link to order
+      updateOrder(order.id, { payment_link: data.short_url, payment_link_id: data.link_id });
+      if (data.whatsapp_sent) toast.success('Payment link created & sent via WhatsApp! 🎉');
+      else toast.success('Payment link created! Copy and share manually.');
+    } catch (e) {
+      setPayError(e.message);
+      setPayStep('error');
+    }
+  };
+
+  const handleShip = async () => {
+    if (!shipAddr.address.trim()) { toast.error('Address line is required'); return; }
+    if (!shipAddr.city.trim())    { toast.error('City is required'); return; }
+    if (!shipAddr.state.trim())   { toast.error('State is required'); return; }
+    if (!shipAddr.pincode.trim()) { toast.error('Pincode is required'); return; }
+    const phone = shipAddr.phone.replace(/\D/g, '') || '9999999999';
+
+    setShipStep('loading');
+
+    // Save address back to order so it persists
+    const addrUpdate = updateOrder(order.id, {
+      customer: shipAddr.name || order.customer,
+      phone: shipAddr.phone,
+      address: shipAddr.address,
+      city: shipAddr.city,
+      state: shipAddr.state,
+      pincode: shipAddr.pincode,
+    });
+    if (addrUpdate) setOrder(addrUpdate);
+
+    try {
+      // Unique Shiprocket order ID = internal ID + timestamp suffix to avoid duplicates
+      const srOrderId = `${order.id}-${Date.now()}`;
+
+      const payload = {
+        order_id: srOrderId,
+        order_date: order.date || new Date().toISOString().split('T')[0],
+        customer_name: shipAddr.name || order.customer || 'Customer',
+        customer_phone: phone,
+        customer_email: order.email || '',
+        address: shipAddr.address,
+        city: shipAddr.city,
+        state: shipAddr.state,
+        pincode: shipAddr.pincode,
+        payment_method: order.payment === 'cod' ? 'COD' : 'Prepaid',
+        sub_total: total,
+        weight,
+        pickup_location: pickupLocation,
+        items: items.map(item => ({
+          name: item.name || 'Product',
+          sku: item.sku || '',
+          qty: item.qty || 1,
+          price: Number(item.price ?? item.unit_price ?? 0),
+        })),
+      };
+
+      const data = await apiFetch('/api/shiprocket/shipment/create', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+
+      // Deduct stock for each item — match by id, sku, or name (case-insensitive)
+      const products = getProducts();
+      for (const item of items) {
+        const nameLower = (item.name || '').toLowerCase().trim();
+        const prod = products.find(p =>
+          (item.product_id && (p.id === item.product_id || p.sku === item.product_id)) ||
+          (item.sku && item.sku !== '—' && p.sku === item.sku) ||
+          (nameLower && p.name.toLowerCase().trim() === nameLower) ||
+          (nameLower && p.name.toLowerCase().includes(nameLower)) ||
+          (nameLower && nameLower.includes(p.name.toLowerCase().trim()))
+        );
+        if (prod) decrementStock(prod.id, item.qty || 1);
+        else console.warn('Stock deduct: no product match for', item.name, item.sku, item.product_id);
+      }
+
+      // Update order in localStorage
+      const updated = updateOrder(order.id, {
+        awb: data.awb,
+        courier: data.courier,
+        shiprocket_order_id: data.shiprocket_order_id,
+        label_url: data.label_url,
+        status: 'shipped',
+      });
+      if (updated) {
+        setOrder(updated);
+        if (onOrderUpdated) onOrderUpdated(updated);
+      }
+
+      setShipResult(data);
+      setShipStep('done');
+      toast.success(`Shipped! AWB: ${data.awb || 'assigned by courier'}`);
+    } catch (e) {
+      setShipError(e.message);
+      setShipStep('error');
+    }
+  };
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 400, display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end' }}
       onClick={onClose}>
       <div onClick={e => e.stopPropagation()} className="animate-in"
         style={{ width: 520, height: '100vh', background: '#fff', boxShadow: 'var(--shadow-lg)', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+
+        {/* Header */}
         <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <button onClick={onClose} className="btn btn-ghost btn-icon">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -290,76 +455,236 @@ function OrderDetail({ order, onClose }) {
             <div style={{ fontWeight: 700, fontSize: '15px' }}>Order {order.id}</div>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{order.date} · <ChannelBadge ch={order.channel} /></div>
           </div>
-          <span className={`badge ${STATUS_BADGE[order.status]?.cls}`} style={{ marginLeft: 'auto' }}>{STATUS_BADGE[order.status]?.label}</span>
+          <span className={`badge ${STATUS_BADGE[order.status]?.cls}`} style={{ marginLeft: 'auto' }}>{STATUS_BADGE[order.status]?.label || order.status}</span>
         </div>
 
+        {/* Customer */}
         <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)', marginBottom: 10 }}>Customer</div>
           <div style={{ fontWeight: 600, fontSize: '14px' }}>{order.customer}</div>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: 2 }}>📞 {order.phone}</div>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: 2 }}>📍 {order.city}, {order.state} — {order.pincode}</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: 2 }}>📞 {order.phone || '—'}</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: 2 }}>📍 {order.city || '—'}{order.state ? `, ${order.state}` : ''}{order.pincode ? ` — ${order.pincode}` : ''}</div>
         </div>
 
+        {/* Items */}
         <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)', marginBottom: 10 }}>Items</div>
-          {order.items.map((item, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: 10, background: 'var(--surface-2)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-              <ProductThumb name={item.name} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500, fontSize: '13px' }}>{item.name}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'monospace', marginTop: 2 }}>SKU: {item.sku}</div>
+          {items.map((item, i) => {
+            const unitPrice = Number(item.price ?? item.unit_price ?? 0);
+            const lineTotal = unitPrice * (item.qty || 1);
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: 10, background: 'var(--surface-2)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                <ProductThumb name={item.name || '?'} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500, fontSize: '13px' }}>{item.name || '—'}</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'monospace', marginTop: 2 }}>SKU: {item.sku || '—'} · EAN: {item.ean || '—'}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontWeight: 700 }}>₹{lineTotal.toLocaleString('en-IN')}</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{item.qty || 1} × ₹{unitPrice}</div>
+                </div>
               </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontWeight: 700 }}>₹{(item.price * item.qty).toLocaleString('en-IN')}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{item.qty} × ₹{item.price}</div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', borderTop: '1px solid var(--border)', fontWeight: 700, fontSize: '14px' }}>
             <span>Total</span>
-            <span style={{ color: 'var(--blue)' }}>₹{order.total.toLocaleString('en-IN')}</span>
+            <span style={{ color: 'var(--blue)' }}>₹{total.toLocaleString('en-IN')}</span>
           </div>
         </div>
 
+        {/* Shipping section */}
         <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)', marginBottom: 10 }}>Shipping</div>
-          {order.courier ? (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontWeight: 500 }}>{order.courier}</div>
-                {order.awb && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>AWB: {order.awb}</div>}
+
+          {(order.awb || order.status === 'shipped') ? (
+            /* Already shipped */
+            <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: '12px 16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>✅ {order.courier || 'Shipped'}</div>
+                  {order.awb && <div style={{ fontSize: '12px', color: '#64748b', fontFamily: 'monospace', marginTop: 2 }}>AWB: {order.awb}</div>}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {order.label_url && (
+                    <a href={order.label_url} target="_blank" rel="noreferrer" className="btn btn-secondary" style={{ fontSize: '12px' }}>🖨️ Label</a>
+                  )}
+                  <button className="btn btn-secondary" style={{ fontSize: '12px' }}
+                    onClick={() => toast.info(`Track ${order.awb} on ${order.courier}`)}>
+                    📍 Track
+                  </button>
+                </div>
               </div>
-              <button className="btn btn-secondary" style={{ fontSize: '12px' }}
-                onClick={() => toast.info(`Tracking ${order.awb} on ${order.courier}`)}>
-                Track
-              </button>
             </div>
-          ) : (
-            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => toast.info('Go to Shipping page to create shipment')}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="1" y="3" width="15" height="13"/><path d="M16 8h4l3 3v5h-7V8z M5.5 21a2.5 2.5 0 100-5 2.5 2.5 0 000 5z M18.5 21a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/></svg>
-              Create Shipment
+
+          ) : shipStep === 'idle' ? (
+            /* Ship now CTA */
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', fontSize: 13 }}
+              onClick={() => setShipStep('confirm')}>
+              🚀 Ship Now via Shiprocket
             </button>
-          )}
+
+          ) : shipStep === 'confirm' ? (
+            /* Confirm form with address */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+              {/* Address fields */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Delivery Address</div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div style={{ gridColumn: '1/-1' }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Customer Name</label>
+                  <input value={shipAddr.name} onChange={setAddr('name')} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} placeholder="Full name" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Phone <span style={{ color: '#dc2626' }}>*</span></label>
+                  <input value={shipAddr.phone} onChange={setAddr('phone')} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} placeholder="10-digit mobile" />
+                </div>
+                <div style={{ gridColumn: '1/-1' }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Address Line <span style={{ color: '#dc2626' }}>*</span></label>
+                  <input value={shipAddr.address} onChange={setAddr('address')} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} placeholder="House no, street, locality" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>City <span style={{ color: '#dc2626' }}>*</span></label>
+                  <input value={shipAddr.city} onChange={setAddr('city')} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} placeholder="City" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>State <span style={{ color: '#dc2626' }}>*</span></label>
+                  <input value={shipAddr.state} onChange={setAddr('state')} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} placeholder="State" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Pincode <span style={{ color: '#dc2626' }}>*</span></label>
+                  <input value={shipAddr.pincode} onChange={setAddr('pincode')} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} placeholder="6-digit pincode" maxLength={6} />
+                </div>
+              </div>
+
+              <div style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
+
+              {/* Package fields */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Package</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Weight (kg)</label>
+                  <input type="number" min="0.1" step="0.1" value={weight} onChange={e => setWeight(parseFloat(e.target.value) || 0.5)} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Pickup Location</label>
+                  <input type="text" value={pickupLocation} onChange={e => setPickupLocation(e.target.value)} className="form-input" style={{ width: '100%', boxSizing: 'border-box' }} placeholder="Primary" />
+                </div>
+              </div>
+
+              <div style={{ fontSize: 11, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 7, padding: '7px 10px' }}>
+                ℹ️ Best courier auto-assigned. AWB + shipping label generated instantly. Stock reduced on confirm.
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setShipStep('idle')}>Cancel</button>
+                <button className="btn btn-primary" style={{ flex: 2, justifyContent: 'center' }} onClick={handleShip}>🚀 Confirm & Create Shipment</button>
+              </div>
+            </div>
+
+          ) : shipStep === 'loading' ? (
+            <div style={{ textAlign: 'center', padding: '20px 0' }}>
+              <div style={{ width: 32, height: 32, border: '3px solid var(--border)', borderTop: '3px solid var(--blue)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 10px' }} />
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Creating shipment on Shiprocket…</div>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+
+          ) : shipStep === 'done' ? (
+            <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: '12px 16px' }}>
+              <div style={{ fontWeight: 700, color: '#166534', marginBottom: 6 }}>✅ Shipment Created!</div>
+              {shipResult?.awb && <div style={{ fontSize: 12, fontFamily: 'monospace' }}>AWB: <strong>{shipResult.awb}</strong></div>}
+              {shipResult?.courier && <div style={{ fontSize: 12 }}>Courier: {shipResult.courier}</div>}
+              {shipResult?.label_url && (
+                <a href={shipResult.label_url} target="_blank" rel="noreferrer" className="btn btn-primary" style={{ marginTop: 8, fontSize: 12 }}>🖨️ Print Label</a>
+              )}
+            </div>
+
+          ) : shipStep === 'error' ? (
+            <div style={{ background: '#fee2e2', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 10, padding: '12px 16px' }}>
+              <div style={{ fontWeight: 600, color: '#dc2626', marginBottom: 6 }}>❌ Shipment failed</div>
+              <div style={{ fontSize: 12, color: '#7f1d1d', marginBottom: 8 }}>{shipError}</div>
+              <button className="btn btn-secondary" style={{ fontSize: 12 }} onClick={() => setShipStep('confirm')}>Try Again</button>
+            </div>
+          ) : null}
         </div>
 
+        {/* Payment Link section — show for all non-cancelled orders */}
+        {order.status !== 'cancelled' && <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+          {/* If shipped/delivered, only show existing link or nothing */}
+          {['shipped', 'delivered'].includes(order.status) && !order.payment_link ? null : <>
+          <div style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)', marginBottom: 10 }}>Payment</div>
+
+          {order.payment_link ? (
+            /* Already has a payment link */
+            <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 12, color: '#166534', marginBottom: 3 }}>💳 Payment Link Created</div>
+                  <a href={order.payment_link} target="_blank" rel="noreferrer"
+                    style={{ fontSize: 11, color: '#3b82f6', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                    {order.payment_link}
+                  </a>
+                </div>
+                <button onClick={() => { navigator.clipboard.writeText(order.payment_link); toast.success('Copied!'); }}
+                  style={{ flexShrink: 0, padding: '5px 10px', background: '#fff', border: '1px solid #bbf7d0', borderRadius: 6, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', color: '#166534' }}>
+                  📋 Copy
+                </button>
+              </div>
+              <button onClick={handleCreatePaymentLink}
+                style={{ marginTop: 8, padding: '4px 10px', background: 'none', border: 'none', fontSize: 11, color: '#64748b', cursor: 'pointer', fontFamily: 'inherit' }}>
+                ↻ Create new link
+              </button>
+            </div>
+
+          ) : payStep === 'idle' ? (
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', fontSize: 13, background: 'linear-gradient(135deg,#6366f1,#8b5cf6)' }}
+              onClick={handleCreatePaymentLink}>
+              💳 Create & Send Payment Link  ₹{total.toLocaleString('en-IN')}
+            </button>
+
+          ) : payStep === 'loading' ? (
+            <div style={{ textAlign: 'center', padding: '16px 0' }}>
+              <div style={{ width: 28, height: 28, border: '3px solid var(--border)', borderTop: '3px solid #6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 8px' }} />
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Creating Razorpay link…</div>
+            </div>
+
+          ) : payStep === 'done' && payResult ? (
+            <div style={{ background: 'linear-gradient(135deg,#f0f7ff,#faf5ff)', border: '1px solid #c7d2fe', borderRadius: 10, padding: '12px 14px' }}>
+              <div style={{ fontWeight: 700, color: '#4338ca', marginBottom: 6, fontSize: 13 }}>💳 Payment Link Ready!</div>
+              <a href={payResult.short_url} target="_blank" rel="noreferrer"
+                style={{ display: 'block', fontSize: 12, color: '#3b82f6', wordBreak: 'break-all', marginBottom: 8 }}>
+                {payResult.short_url}
+              </a>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button onClick={() => { navigator.clipboard.writeText(payResult.short_url); toast.success('Copied!'); }}
+                  style={{ padding: '5px 12px', background: '#fff', border: '1px solid #c7d2fe', borderRadius: 6, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', color: '#4338ca', fontWeight: 600 }}>
+                  📋 Copy Link
+                </button>
+                {payResult.whatsapp_sent
+                  ? <span style={{ fontSize: 11, color: '#25D366', fontWeight: 600, padding: '5px 0' }}>✅ Sent on WhatsApp</span>
+                  : <button onClick={() => toast.info('Manual: copy link and paste in WhatsApp')}
+                      style={{ padding: '5px 12px', background: '#25D366', border: 'none', borderRadius: 6, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', color: '#fff', fontWeight: 600 }}>
+                      💬 Send on WhatsApp
+                    </button>
+                }
+              </div>
+            </div>
+
+          ) : payStep === 'error' ? (
+            <div style={{ background: '#fee2e2', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 10, padding: '12px 14px' }}>
+              <div style={{ fontWeight: 600, color: '#dc2626', marginBottom: 4, fontSize: 12 }}>❌ Failed to create link</div>
+              <div style={{ fontSize: 11, color: '#7f1d1d', marginBottom: 8 }}>{payError}</div>
+              <button className="btn btn-secondary" style={{ fontSize: 11 }} onClick={() => setPayStep('idle')}>Try Again</button>
+            </div>
+          ) : null}
+          </>}
+        </div>}
+
+        {/* Actions */}
         <div style={{ padding: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary" style={{ fontSize: '12px' }}
-            onClick={() => toast.success('Label sent to printer')}>
-            🖨️ Print Label
-          </button>
-          <button className="btn btn-secondary" style={{ fontSize: '12px' }}
-            onClick={() => toast.success(`WhatsApp sent to ${order.phone}`)}>
-            💬 Send WA
-          </button>
-          <button className="btn btn-secondary" style={{ fontSize: '12px' }}
-            onClick={() => toast.success('Invoice generated')}>
-            🧾 Invoice
-          </button>
-          <button className="btn btn-danger" style={{ fontSize: '12px' }}
-            onClick={() => { toast.warn(`Order ${order.id} cancellation requested`); onClose(); }}>
-            Cancel
-          </button>
+          <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => toast.success('Label sent to printer')}>🖨️ Print Label</button>
+          <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => toast.success(`WhatsApp sent to ${order.phone}`)}>💬 Send WA</button>
+          <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => toast.success('Invoice generated')}>🧾 Invoice</button>
+          <button className="btn btn-danger" style={{ fontSize: '12px' }} onClick={() => { toast.warn(`Order ${order.id} cancellation requested`); onClose(); }}>Cancel</button>
         </div>
       </div>
     </div>
@@ -544,7 +869,16 @@ export default function OrdersPage({ filterChannel }) {
         </div>
       </div>
 
-      {selectedOrder && <OrderDetail order={selectedOrder} onClose={() => setSelectedOrder(null)} />}
+      {selectedOrder && (
+        <OrderDetail
+          order={selectedOrder}
+          onClose={() => setSelectedOrder(null)}
+          onOrderUpdated={updated => {
+            refreshOrders();
+            setSelectedOrder(updated);
+          }}
+        />
+      )}
       {showAddOrder && <AddOrderModal onClose={(didCreate) => { setShowAddOrder(false); if (didCreate) refreshOrders(); }} onNavigate={undefined} />}
     </div>
   );
