@@ -21,3 +21,17 @@ services:
         sync: false
       - key: APP_BASE_URL
         sync: false
+      # WhatsApp bridge — set these only if you run the bridge on the same host
+      # or expose it via a tunnel. Leave unset to disable bridge features.
+      - key: WHATSAPP_BRIDGE_API
+        sync: false
+      - key: WHATSAPP_DB_PATH
+        sync: false
+      - key: WHATSAPP_DEVICE_DB
+        sync: false
+      - key: WHATSAPP_BRIDGE_BINARY
+        sync: false
+      - key: WHATSAPP_BRIDGE_DIR
+        sync: false
+      - key: D2CFLOW_STORE_DIR
+        sync: false

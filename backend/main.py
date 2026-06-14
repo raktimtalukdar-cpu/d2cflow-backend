@@ -9,10 +9,15 @@ import os
 from .scheduler import start_scheduler, stop_scheduler
 from .database import get_db
 from .config import get_settings
+from .middleware import RequestIDMiddleware, RateLimitMiddleware
+from .monitoring import metrics
 from .routers import auth as auth_router
 from .routers import integrations as integrations_router
 from .routers import invite as invite_router
 from .routers import shopify as shopify_router
+from .routers import whatsapp as whatsapp_router
+from .routers import shiprocket as shiprocket_router
+from .routers import payments as payments_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -35,11 +40,16 @@ app = FastAPI(
 )
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(RateLimitMiddleware)
 
 app.include_router(auth_router.router)
 app.include_router(integrations_router.router)
 app.include_router(invite_router.router)
 app.include_router(shopify_router.router)
+app.include_router(whatsapp_router.router)
+app.include_router(shiprocket_router.router)
+app.include_router(payments_router.router)
 
 # ------------------------------------------------------------------ #
 # Health
@@ -48,6 +58,21 @@ app.include_router(shopify_router.router)
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/health/detailed")
+def health_detailed():
+    from .routers.whatsapp import _monitored_chats, _detected_orders, _pending_broadcasts
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "metrics": metrics.summary(),
+        "whatsapp": {
+            "monitored_chats": len(_monitored_chats),
+            "detected_orders": len(_detected_orders),
+            "pending_broadcasts": len(_pending_broadcasts),
+        },
+    }
 
 
 # ------------------------------------------------------------------ #

@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+import os
 
 
 class Settings(BaseSettings):
@@ -47,6 +48,10 @@ class Settings(BaseSettings):
     shiprocket_email: str = ""
     shiprocket_password: str = ""
 
+    # Razorpay
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+
     # WhatsApp Cloud API (Meta)
     whatsapp_phone_number_id: str = ""
     whatsapp_access_token: str = ""
@@ -67,7 +72,10 @@ class Settings(BaseSettings):
     cod_confirm_timeout_hours: int = 2
 
     class Config:
-        env_file = ".env"
+        env_file = [
+            ".env",                                                        # project root
+            os.path.join(os.path.dirname(__file__), ".env"),               # backend/.env
+        ]
 
 
 @lru_cache

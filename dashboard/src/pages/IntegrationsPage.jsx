@@ -437,6 +437,305 @@ function ShopifyConnectModal({ onClose, onConnected }) {
   );
 }
 
+// ── WhatsAppModal ─────────────────────────────────────────────────────────────
+
+const WA_CHATS_KEY = 'd2cflow_wa_chats';
+
+function loadWaChats() {
+  try { return JSON.parse(localStorage.getItem(WA_CHATS_KEY) || '[]'); } catch { return []; }
+}
+
+async function waFetch(path, options = {}) {
+  const res = await fetch(`${BACKEND}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
+}
+
+function WhatsAppModal({ onClose, onConnected }) {
+  const [step, setStep] = useState('chats'); // chats | orders
+  const [chats, setChats] = useState([]);
+  const [chatName, setChatName] = useState('');
+  const [chatJid, setChatJid] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [orders, setOrders] = useState([]);
+  const [scanning, setScanning] = useState(false);
+
+  // Load monitored chats from backend on open
+  useEffect(() => {
+    waFetch('/api/whatsapp/chats').then(d => setChats(d.chats || [])).catch(() => {
+      // Backend not running — load from localStorage cache
+      setChats(loadWaChats());
+    });
+  }, []);
+
+  const handleAddChat = async () => {
+    if (!chatJid.trim() || !customerName.trim()) return;
+    setAdding(true);
+    try {
+      const data = await waFetch('/api/whatsapp/add-chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          chat_name: chatName || customerName,
+          chat_jid: chatJid.trim(),
+          customer_name: customerName.trim(),
+        }),
+      });
+      const updated = [...chats, data.chat];
+      setChats(updated);
+      localStorage.setItem(WA_CHATS_KEY, JSON.stringify(updated));
+      setChatJid(''); setChatName(''); setCustomerName('');
+      toast.success(`Chat added: ${customerName}`);
+      if (updated.length === 1) onConnected('whatsapp', { chat_count: updated.length });
+    } catch (e) {
+      toast.error(e.message || 'Failed to add chat — is the backend running?');
+    }
+    setAdding(false);
+  };
+
+  const handleRemoveChat = async (jid) => {
+    try {
+      await waFetch(`/api/whatsapp/chats/${encodeURIComponent(jid)}`, { method: 'DELETE' });
+      const updated = chats.filter(c => c.chat_jid !== jid);
+      setChats(updated);
+      localStorage.setItem(WA_CHATS_KEY, JSON.stringify(updated));
+      toast.info('Chat removed');
+    } catch (e) {
+      toast.error(e.message || 'Failed to remove');
+    }
+  };
+
+  const handleScan = async () => {
+    setScanning(true);
+    try {
+      const res = await waFetch('/api/whatsapp/scan', { method: 'POST' });
+      const ordersData = await waFetch('/api/whatsapp/detected-orders');
+      setOrders(ordersData.orders || []);
+      setStep('orders');
+      toast.success(`${res.new_detections} new order intent(s) detected`);
+    } catch (e) {
+      toast.error(e.message || 'Scan failed — is the backend running?');
+    }
+    setScanning(false);
+  };
+
+  const handleConfirm = async (order) => {
+    try {
+      const res = await waFetch('/api/whatsapp/confirm-order', {
+        method: 'POST',
+        body: JSON.stringify({ order_id: order.id }),
+      });
+      const { addOrder } = await import('../data/orders');
+      addOrder(res.localStorage_payload);
+      setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: 'confirmed' } : o));
+      toast.success(`Order confirmed for ${order.customer_name}`);
+    } catch (e) {
+      toast.error(e.message || 'Failed to confirm');
+    }
+  };
+
+  const handleReject = async (order) => {
+    try {
+      await waFetch('/api/whatsapp/reject-order', {
+        method: 'POST',
+        body: JSON.stringify({ order_id: order.id }),
+      });
+      setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: 'rejected' } : o));
+      toast.info('Order intent rejected');
+    } catch (e) {
+      toast.error(e.message || 'Failed to reject');
+    }
+  };
+
+  const pendingCount = orders.filter(o => o.status === 'pending').length;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className="animate-in"
+        style={{ width: 620, maxHeight: '85vh', background: '#fff', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+
+        {/* Header */}
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: '#25D36618', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>💬</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>WhatsApp Order Intake</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 1 }}>Monitor chats · detect order intent · confirm orders</div>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={() => setStep('chats')}
+              style={{ fontSize: 11, padding: '4px 10px', background: step === 'chats' ? '#25D366' : 'var(--surface-2)', color: step === 'chats' ? '#fff' : 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit' }}>
+              Chats
+            </button>
+            <button onClick={() => { setStep('orders'); waFetch('/api/whatsapp/detected-orders').then(d => setOrders(d.orders || [])).catch(() => {}); }}
+              style={{ fontSize: 11, padding: '4px 10px', background: step === 'orders' ? '#25D366' : 'var(--surface-2)', color: step === 'orders' ? '#fff' : 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit' }}>
+              Orders {pendingCount > 0 && <span style={{ background: '#ef4444', color: '#fff', borderRadius: 20, padding: '0 5px', fontSize: 10 }}>{pendingCount}</span>}
+            </button>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--text-secondary)', display: 'flex' }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+
+          {/* Chats step */}
+          {step === 'chats' && (
+            <div style={{ padding: 20 }}>
+              <div style={{ background: '#f0fdf4', border: '1px solid rgba(37,211,102,0.3)', borderRadius: 'var(--radius)', padding: '12px 14px', fontSize: 12, color: '#166534', marginBottom: 20, lineHeight: 1.6 }}>
+                <strong>How it works:</strong> Add the WhatsApp Chat JID for each customer chat you want to monitor.
+                The scanner will read messages and automatically detect order intent using keywords like "want", "buy", "order", "how much", etc.
+              </div>
+
+              {/* Add chat form */}
+              <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 16, marginBottom: 20 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Add Chat</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Customer Name *</label>
+                    <input className="form-input" value={customerName} onChange={e => setCustomerName(e.target.value)}
+                      placeholder="Priya Sharma" style={{ width: '100%', boxSizing: 'border-box' }} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>Chat Label (optional)</label>
+                    <input className="form-input" value={chatName} onChange={e => setChatName(e.target.value)}
+                      placeholder="Mumbai Reseller" style={{ width: '100%', boxSizing: 'border-box' }} />
+                  </div>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 3 }}>WhatsApp JID or Phone *</label>
+                  <div style={{ fontSize: 10, color: 'var(--text-disabled)', marginBottom: 3 }}>e.g. 919876543210@s.whatsapp.net or group JID</div>
+                  <input className="form-input" value={chatJid} onChange={e => setChatJid(e.target.value)}
+                    placeholder="919876543210@s.whatsapp.net" style={{ width: '100%', boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button className="btn btn-primary" onClick={handleAddChat}
+                    disabled={adding || !chatJid.trim() || !customerName.trim()}
+                    style={{ background: '#25D366', fontSize: 12 }}>
+                    {adding ? 'Adding…' : '+ Add to Monitoring'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Monitored chats list */}
+              {chats.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-secondary)', fontSize: 13 }}>
+                  No chats monitored yet. Add one above.
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>
+                    Monitored ({chats.length})
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {chats.map(c => (
+                      <div key={c.chat_jid} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: '#fff' }}>
+                        <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#25D36618', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>💬</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{c.customer_name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-disabled)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.chat_jid}</div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#25D366' }} />
+                          <span style={{ fontSize: 10, color: '#25D366', fontWeight: 600 }}>Live</span>
+                        </div>
+                        <button onClick={() => handleRemoveChat(c.chat_jid)}
+                          style={{ fontSize: 11, padding: '4px 8px', background: 'var(--red-light)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
+                    <button className="btn btn-primary" onClick={handleScan} disabled={scanning}
+                      style={{ background: '#25D366', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {scanning ? (
+                        <><div style={{ width: 12, height: 12, border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'wa-modal-spin 0.7s linear infinite' }} /> Scanning…</>
+                      ) : '🔍 Scan for Orders'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Orders step */}
+          {step === 'orders' && (
+            <div style={{ padding: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                  {orders.length} detected order intent{orders.length !== 1 ? 's' : ''}
+                  {pendingCount > 0 && <span style={{ marginLeft: 8, background: '#fef9c3', color: '#854d0e', borderRadius: 20, padding: '2px 8px', fontSize: 11 }}>{pendingCount} pending</span>}
+                </div>
+                <button className="btn btn-secondary" onClick={handleScan} disabled={scanning} style={{ fontSize: 12 }}>
+                  {scanning ? 'Scanning…' : '⟳ Scan again'}
+                </button>
+              </div>
+
+              {orders.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-secondary)', fontSize: 13 }}>
+                  No orders detected yet. Go to Chats tab and click "Scan for Orders".
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {orders.map(order => (
+                    <div key={order.id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 14px', background: order.status === 'pending' ? '#fff' : 'var(--surface-2)' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                            <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-primary)' }}>{order.customer_name}</span>
+                            {order.product_hint && (
+                              <span style={{ background: '#eff6ff', color: '#3b82f6', borderRadius: 20, padding: '1px 8px', fontSize: 11 }}>{order.product_hint}</span>
+                            )}
+                            <span style={{ fontSize: 11, color: 'var(--text-disabled)', marginLeft: 'auto' }}>Qty: {order.qty}</span>
+                            {order.price && <span style={{ fontSize: 12, color: '#059669', fontWeight: 600 }}>₹{order.price.toLocaleString('en-IN')}</span>}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5, fontStyle: 'italic' }}>
+                            "{order.message_text?.length > 100 ? order.message_text.slice(0, 100) + '…' : order.message_text}"
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                          {order.status === 'pending' ? (
+                            <>
+                              <button onClick={() => handleConfirm(order)}
+                                style={{ fontSize: 11, padding: '5px 10px', background: '#dcfce7', color: '#166534', border: '1px solid rgba(22,101,52,0.2)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+                                ✅ Confirm
+                              </button>
+                              <button onClick={() => handleReject(order)}
+                                style={{ fontSize: 11, padding: '5px 10px', background: 'var(--red-light)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                ❌ Reject
+                              </button>
+                            </>
+                          ) : (
+                            <span style={{
+                              fontSize: 11, padding: '4px 10px', borderRadius: 20, fontWeight: 600,
+                              background: order.status === 'confirmed' ? '#dcfce7' : '#fee2e2',
+                              color: order.status === 'confirmed' ? '#166534' : '#991b1b',
+                            }}>
+                              {order.status === 'confirmed' ? '✓ Confirmed' : '✗ Rejected'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <style>{`@keyframes wa-modal-spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    </div>
+  );
+}
+
 // ── ConnectModal ──────────────────────────────────────────────────────────────
 
 function ConnectModal({ integration, onClose, onSave }) {
@@ -690,6 +989,7 @@ export default function IntegrationsPage({ onNavigate }) {
   const [connected, setConnected] = useState(loadConnected);
   const [modal, setModal] = useState(null);
   const [shopifyModal, setShopifyModal] = useState(false);
+  const [whatsappModal, setWhatsappModal] = useState(false);
   const [search, setSearch] = useState('');
   const [shopifyConn, setShopifyConn] = useState(loadShopifyConnection);
 
@@ -809,7 +1109,7 @@ export default function IntegrationsPage({ onNavigate }) {
                   </div>
                   <p style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1, margin: 0 }}>{item.desc}</p>
                   <button className="btn btn-primary" style={{ fontSize: 12, justifyContent: 'center', padding: '7px 0' }}
-                    onClick={() => item.id === 'shopify' ? setShopifyModal(true) : setModal(item)}>
+                    onClick={() => item.id === 'shopify' ? setShopifyModal(true) : item.id === 'whatsapp' ? setWhatsappModal(true) : setModal(item)}>
                     + Connect
                   </button>
                 </div>
@@ -824,6 +1124,12 @@ export default function IntegrationsPage({ onNavigate }) {
         <ShopifyConnectModal
           onClose={() => setShopifyModal(false)}
           onConnected={handleShopifyConnected}
+        />
+      )}
+      {whatsappModal && (
+        <WhatsAppModal
+          onClose={() => setWhatsappModal(false)}
+          onConnected={(id, info) => { handleConnect(id, info); toast.success('WhatsApp monitoring active'); }}
         />
       )}
 

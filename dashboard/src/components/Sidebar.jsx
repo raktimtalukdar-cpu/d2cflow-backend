@@ -1,13 +1,25 @@
-import { useState } from 'react';
-import { CHANNEL_STATS, ORDERS } from '../data/mockData';
+import { useState, useEffect, useMemo } from 'react';
+import { getOrders } from '../data/orders';
 
-const counts = {
-  orders: ORDERS.length,
-  new: ORDERS.filter(o => o.status === 'new').length,
-  rtd: ORDERS.filter(o => o.status === 'rtd').length,
-  shipped: ORDERS.filter(o => o.status === 'shipped').length,
-  rto: ORDERS.filter(o => o.status === 'rto').length,
-};
+function computeCounts() {
+  let orders = [];
+  try { orders = getOrders() || []; } catch { orders = []; }
+  return {
+    orders: orders.filter(o => o.status !== 'cancelled').length,
+    new: orders.filter(o => o.status === 'new').length,
+    rtd: orders.filter(o => o.status === 'rtd' || o.status === 'confirmed').length,
+    shipped: orders.filter(o => o.status === 'shipped').length,
+    rto: orders.filter(o => o.status === 'rto').length,
+    delivered: orders.filter(o => o.status === 'delivered').length,
+    byChannel: {
+      amazon:  orders.filter(o => (o.channel || '').toLowerCase().includes('amazon')).length,
+      flipkart: orders.filter(o => (o.channel || '').toLowerCase().includes('flipkart')).length,
+      meesho:  orders.filter(o => (o.channel || '').toLowerCase().includes('meesho')).length,
+      myntra:  orders.filter(o => (o.channel || '').toLowerCase().includes('myntra')).length,
+      shopify: orders.filter(o => (o.channel || '').toLowerCase().includes('shopify')).length,
+    },
+  };
+}
 
 const NavIcon = ({ d }) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -24,6 +36,8 @@ const ICONS = {
   returns: 'M3 9l9-7 9 7 M9 22V12h6v10 M15 9H9',
   integrations: 'M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71 M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71',
   analytics: 'M18 20V10 M12 20V4 M6 20v-6',
+  whatsapp: 'M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z',
+  crm: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2 M23 21v-2a4 4 0 00-3-3.87 M16 3.13a4 4 0 010 7.75 M9 7a4 4 0 100 8 4 4 0 000-8z',
   settings: 'M12 15a3 3 0 100-6 3 3 0 000 6z M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z',
 };
 
@@ -76,6 +90,21 @@ function Section({ title, children, defaultOpen = false }) {
 }
 
 export default function Sidebar({ active, onNavigate }) {
+  const [counts, setCounts] = useState(() => computeCounts());
+
+  // Recompute on every navigation (active change) and on localStorage updates
+  useEffect(() => {
+    setCounts(computeCounts());
+  }, [active]);
+
+  useEffect(() => {
+    const handler = () => setCounts(computeCounts());
+    window.addEventListener('storage', handler);
+    // Also poll every 3s to catch same-tab localStorage writes
+    const interval = setInterval(handler, 3000);
+    return () => { window.removeEventListener('storage', handler); clearInterval(interval); };
+  }, []);
+
   return (
     <div style={{
       width: 'var(--sidebar-width)', minHeight: '100vh', background: 'var(--sidebar-bg)',
@@ -96,6 +125,8 @@ export default function Sidebar({ active, onNavigate }) {
       {/* Main nav */}
       <NavItem icon="home" label="Home" active={active === 'home'} onClick={() => onNavigate('home')} />
       <NavItem icon="orders" label="Orders" badge={counts.orders} active={active === 'orders'} onClick={() => onNavigate('orders')} />
+      <NavItem icon="whatsapp" label="WhatsApp Orders" active={active === 'whatsapp-orders'} onClick={() => onNavigate('whatsapp-orders')} />
+      <NavItem icon="crm" label="CRM" active={active === 'crm'} onClick={() => onNavigate('crm')} />
       <NavItem icon="shipping" label="Shipping" badge={counts.rtd} active={active === 'shipping'} onClick={() => onNavigate('shipping')} />
       <NavItem icon="products" label="Products" active={active === 'products'} onClick={() => onNavigate('products')} />
       <NavItem icon="returns" label="Returns" badge={counts.rto} active={active === 'returns'} onClick={() => onNavigate('returns')} />
@@ -107,11 +138,11 @@ export default function Sidebar({ active, onNavigate }) {
 
       {/* Channel sections */}
       <Section title="Marketplaces" defaultOpen>
-        <NavItem label="Amazon IN" badge={CHANNEL_STATS.amazon.new + CHANNEL_STATS.amazon.rtd} active={active === 'ch-amazon'} onClick={() => onNavigate('ch-amazon')} indent={0.5} />
-        <NavItem label="Flipkart" badge={CHANNEL_STATS.flipkart.new} active={active === 'ch-flipkart'} onClick={() => onNavigate('ch-flipkart')} indent={0.5} />
-        <NavItem label="Meesho" badge={CHANNEL_STATS.meesho.new} active={active === 'ch-meesho'} onClick={() => onNavigate('ch-meesho')} indent={0.5} />
-        <NavItem label="Myntra" badge={CHANNEL_STATS.myntra.new} active={active === 'ch-myntra'} onClick={() => onNavigate('ch-myntra')} indent={0.5} />
-        <NavItem label="Shopify" badge={CHANNEL_STATS.shopify.new} active={active === 'ch-shopify'} onClick={() => onNavigate('ch-shopify')} indent={0.5} />
+        <NavItem label="Amazon IN" badge={counts.byChannel.amazon} active={active === 'ch-amazon'} onClick={() => onNavigate('ch-amazon')} indent={0.5} />
+        <NavItem label="Flipkart" badge={counts.byChannel.flipkart} active={active === 'ch-flipkart'} onClick={() => onNavigate('ch-flipkart')} indent={0.5} />
+        <NavItem label="Meesho" badge={counts.byChannel.meesho} active={active === 'ch-meesho'} onClick={() => onNavigate('ch-meesho')} indent={0.5} />
+        <NavItem label="Myntra" badge={counts.byChannel.myntra} active={active === 'ch-myntra'} onClick={() => onNavigate('ch-myntra')} indent={0.5} />
+        <NavItem label="Shopify" badge={counts.byChannel.shopify} active={active === 'ch-shopify'} onClick={() => onNavigate('ch-shopify')} indent={0.5} />
       </Section>
 
       <Section title="Shipments">
