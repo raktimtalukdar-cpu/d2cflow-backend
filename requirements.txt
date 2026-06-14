@@ -1,3 +1,4 @@
+# d2cflow backend dependencies — v2
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic[email]==2.9.2
