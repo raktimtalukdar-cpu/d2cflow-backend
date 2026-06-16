@@ -1188,19 +1188,44 @@ def _auto_scan_job() -> None:
         logger.error("Auto-scan failed: %s", e)
 
 
-try:
-    _wa_scheduler.add_job(_auto_scan_job, "interval", minutes=2, id="wa_auto_scan", replace_existing=True)
-    _wa_scheduler.start()
-    logger.info("WhatsApp auto-scanner started (every 2 min)")
-except Exception as e:
-    logger.warning("Could not start WhatsApp auto-scanner: %s", e)
+_wa_auto_scanner_started = False
 
-# Auto-start bridge only if the binary exists (local dev only)
-if os.path.exists(BRIDGE_BINARY):
+
+def start_wa_automation() -> None:
+    """Start the WhatsApp auto-scanner scheduler and bridge.
+    Call this explicitly from the app lifespan instead of relying on module-level side effects.
+    Safe to call multiple times — subsequent calls are no-ops.
+    """
+    global _wa_auto_scanner_started
+    if _wa_auto_scanner_started:
+        return
     try:
-        _start_bridge()
+        _wa_scheduler.add_job(_auto_scan_job, "interval", minutes=2, id="wa_auto_scan", replace_existing=True)
+        _wa_scheduler.start()
+        logger.info("WhatsApp auto-scanner started (every 2 min)")
     except Exception as e:
-        logger.warning("Could not auto-start WhatsApp bridge: %s", e)
+        logger.warning("Could not start WhatsApp auto-scanner: %s", e)
+
+    # Auto-start bridge only if the binary exists (local dev only)
+    if os.path.exists(BRIDGE_BINARY):
+        try:
+            _start_bridge()
+        except Exception as e:
+            logger.warning("Could not auto-start WhatsApp bridge: %s", e)
+    _wa_auto_scanner_started = True
+
+
+def stop_wa_automation() -> None:
+    """Shut down the WhatsApp auto-scanner scheduler."""
+    try:
+        _wa_scheduler.shutdown(wait=False)
+    except Exception:
+        pass
+
+
+# Start on import for backward compatibility, but callers should
+# prefer invoking start_wa_automation() explicitly from the app lifespan.
+start_wa_automation()
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────

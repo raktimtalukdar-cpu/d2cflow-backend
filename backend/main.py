@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -9,6 +9,7 @@ import os
 from .scheduler import start_scheduler, stop_scheduler
 from .database import get_db
 from .config import get_settings
+from .routers.whatsapp import start_wa_automation, stop_wa_automation
 from .middleware import RequestIDMiddleware, RateLimitMiddleware
 from .monitoring import metrics
 from .routers import auth as auth_router
@@ -27,8 +28,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting D2C Automation Engine...")
     start_scheduler()
+    start_wa_automation()
     yield
     logger.info("Shutting down...")
+    stop_wa_automation()
     stop_scheduler()
 
 
