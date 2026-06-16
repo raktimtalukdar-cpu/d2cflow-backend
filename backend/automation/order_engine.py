@@ -229,7 +229,7 @@ class OrderAutomationEngine:
             db.table("orders")
             .select("id, channel_order_id, customer_name, customer_phone, customer_email, awb, courier")
             .eq("status", "dispatched")
-            .is_("dispatched_at", "not.null")
+            .not_.is_("dispatched_at", "null")
             .execute()
         )
 
