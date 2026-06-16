@@ -1,5 +1,6 @@
 # d2cflow backend dependencies — v2
 fastapi==0.115.0
+python-amazon-sp-api==2.1.8
 uvicorn[standard]==0.30.6
 pydantic[email]==2.9.2
 pydantic-settings==2.5.2
