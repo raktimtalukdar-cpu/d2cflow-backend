@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from '../components/Toast';
 import { getOrders, saveOrders } from '../data/orders';
+import { api } from '../lib/api';
 
-const BACKEND = 'http://localhost:8000';
+const BACKEND = '';
 
 const INTEGRATIONS = [
   {
@@ -11,20 +12,18 @@ const INTEGRATIONS = [
       {
         id: 'amazon', name: 'Amazon Seller Central', logo: '📦', color: '#FF9900',
         desc: 'Sync orders via SP-API. Supports Easy Ship, Self-Ship & FBA.',
-        authType: 'credentials',
-        fields: [
-          { key: 'seller_id', label: 'Seller ID', type: 'text', placeholder: 'A2EUQ1WTGCTBG2', hint: 'Found in Seller Central → Account Info' },
-          { key: 'mws_token', label: 'MWS Auth Token', type: 'password', placeholder: 'amzn.mws.xxxxxxxx', hint: 'Generate at sellercentral.amazon.in → Developer Tokens' },
-        ],
+        authType: 'oauth',
+        oauthEndpoint: '/api/integrations/amazon/connect',
+        permissions: ['Read & sync all orders', 'Confirm shipments & push AWB', 'Access product listings', 'Inventory management'],
+        fields: [],
       },
       {
         id: 'flipkart', name: 'Flipkart Seller Hub', logo: '🛍️', color: '#2874F0',
         desc: 'Pull orders, push AWB and status via Flipkart Seller API.',
-        authType: 'credentials',
-        fields: [
-          { key: 'app_id', label: 'App ID', type: 'text', placeholder: 'FK_APP_XXXXX' },
-          { key: 'app_secret', label: 'App Secret', type: 'password', placeholder: '••••••••', hint: 'Flipkart Seller Hub → Settings → API' },
-        ],
+        authType: 'oauth',
+        oauthEndpoint: '/api/integrations/flipkart/connect',
+        permissions: ['Read & sync all orders', 'Dispatch orders & push AWB', 'Update order status'],
+        fields: [],
       },
       {
         id: 'meesho', name: 'Meesho', logo: '🪡', color: '#9B59B6',
@@ -50,7 +49,7 @@ const INTEGRATIONS = [
         authType: 'credentials',
         fields: [
           { key: 'api_key', label: 'API Key', type: 'password', placeholder: 'ajio_key_xxxxxxxx' },
-          { key: 'vendor_id', label: 'Vendor ID', type: 'text', placeholder: 'AJIO_V_XXXXX', hint: 'Ajio Seller Portal → My Account' },
+          { key: 'seller_id', label: 'Seller ID', type: 'text', placeholder: 'AJIO_V_XXXXX', hint: 'Ajio Business Portal → My Account' },
         ],
       },
       {
@@ -58,7 +57,26 @@ const INTEGRATIONS = [
         desc: 'Sync Nykaa orders and product listings.',
         authType: 'credentials',
         fields: [
-          { key: 'api_key', label: 'API Key', type: 'password', placeholder: 'nyk_api_xxxxxxxx', hint: 'Nykaa Seller Hub → API Integration' },
+          { key: 'api_token', label: 'API Token', type: 'password', placeholder: 'nyk_api_xxxxxxxx', hint: 'Nykaa Seller Hub → API Integration' },
+          { key: 'seller_id', label: 'Seller ID', type: 'text', placeholder: 'NYK_XXXXX' },
+        ],
+      },
+      {
+        id: 'snapdeal', name: 'Snapdeal', logo: '🔴', color: '#E02020',
+        desc: 'Connect Snapdeal Seller Zone for order sync.',
+        authType: 'credentials',
+        fields: [
+          { key: 'api_token', label: 'API Token', type: 'password', placeholder: 'sd_api_xxxxxxxx', hint: 'Snapdeal Seller Zone → API Access' },
+          { key: 'seller_id', label: 'Seller ID', type: 'text', placeholder: 'SD_XXXXX' },
+        ],
+      },
+      {
+        id: 'firstcry', name: 'FirstCry', logo: '🍼', color: '#F57C00',
+        desc: 'Connect FirstCry Seller Portal for order management.',
+        authType: 'credentials',
+        fields: [
+          { key: 'api_token', label: 'API Token', type: 'password', placeholder: 'fc_api_xxxxxxxx', hint: 'FirstCry Seller Portal → API Settings' },
+          { key: 'seller_code', label: 'Seller Code', type: 'text', placeholder: 'FC_XXXXX' },
         ],
       },
     ],
@@ -184,10 +202,63 @@ const INTEGRATIONS = [
   },
 ];
 
+// ── Guide accordion ──────────────────────────────────────────────────────────
+
+function GuideAccordion({ channel }) {
+  const [open, setOpen] = useState(false);
+  const [guide, setGuide] = useState(null);
+
+  const load = async () => {
+    if (guide) { setOpen(o => !o); return; }
+    try {
+      const res = await fetch(`/api/integrations/guide/${channel}`);
+      if (res.ok) { setGuide(await res.json()); setOpen(true); }
+    } catch (_) {}
+  };
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <button onClick={load} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--blue)', display: 'flex', alignItems: 'center', gap: 5, padding: 0, fontFamily: 'inherit' }}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>
+          <path d="m9 18 6-6-6-6"/>
+        </svg>
+        Where to find these credentials
+      </button>
+      {open && guide && (
+        <div style={{ marginTop: 10, padding: '12px 14px', background: '#f8faff', border: '1px solid #dbeafe', borderRadius: 'var(--radius)', fontSize: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 8, color: '#1e40af' }}>
+            Setup guide · ~{guide.estimated_minutes} min
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {guide.steps.map(s => (
+              <div key={s.n} style={{ display: 'flex', gap: 10 }}>
+                <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#3b82f6', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, flexShrink: 0, marginTop: 1 }}>
+                  {s.n}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>{s.title}</div>
+                  <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5 }}>{s.instruction}</div>
+                  {s.url_template && s.url_label && (
+                    <a href={s.url_template} target="_blank" rel="noreferrer"
+                      style={{ color: '#3b82f6', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 4, fontWeight: 500 }}>
+                      {s.url_label} ↗
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Real API test via backend ─────────────────────────────────────────────────
 
 async function testCredentials(channel, credentials) {
-  const res = await fetch(`${BACKEND}/api/integrations/test`, {
+  const res = await fetch(`/api/integrations/test`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel, credentials }),
@@ -198,9 +269,8 @@ async function testCredentials(channel, credentials) {
 }
 
 async function getOAuthUrl(endpoint) {
-  const res = await fetch(`${BACKEND}${endpoint}`);
-  if (!res.ok) throw new Error('Could not get OAuth URL — check backend config');
-  const data = await res.json();
+  const { data } = await api.get(endpoint);
+  if (!data.redirect_url) throw new Error('Backend did not return a redirect URL');
   return data.redirect_url;
 }
 
@@ -766,8 +836,11 @@ function ConnectModal({ integration, onClose, onSave }) {
     setStep('loading');
     try {
       const url = await getOAuthUrl(integration.oauthEndpoint);
-      window.open(url, '_blank', 'width=600,height=700');
-      setResultMsg('OAuth window opened. Complete authorization in the popup, then return here.');
+      const w = 700, h = 800;
+      const left = window.screen.width / 2 - w / 2;
+      const top = window.screen.height / 2 - h / 2;
+      window.open(url, `${integration.id}_oauth`, `width=${w},height=${h},left=${left},top=${top}`);
+      setResultMsg(`Authorization window opened. Complete login in the popup, then click Save.`);
       setStep('success');
     } catch (e) {
       setErrorMsg(e.message);
@@ -775,8 +848,20 @@ function ConnectModal({ integration, onClose, onSave }) {
     }
   };
 
-  const handleSave = () => {
-    onSave(integration.id);
+  const handleSave = async () => {
+    try {
+      // Save credentials to backend DB (requires auth JWT via api interceptor)
+      await api.post('/api/integrations', { channel: integration.id, credentials: creds });
+      // Trigger catalog import in the background for catalog channels
+      const catalogChannels = ['shopify', 'amazon', 'flipkart'];
+      if (catalogChannels.includes(integration.id)) {
+        api.post(`/trigger/catalog-import?channel=${integration.id}`).catch(() => {});
+      }
+    } catch (e) {
+      // Non-fatal — still mark connected locally if backend save fails
+      console.warn('Failed to save credentials to backend:', e.message);
+    }
+    onSave(integration.id, { display_name: resultMsg?.split('·')[0]?.trim() || integration.name });
     toast.success(`${integration.name} connected`);
     onClose();
   };
@@ -842,6 +927,7 @@ function ConnectModal({ integration, onClose, onSave }) {
                     />
                   </div>
                 ))}
+                <GuideAccordion channel={integration.id} />
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
                   <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
                   <button className="btn btn-primary" onClick={handleConnect} disabled={!allFilled}>
@@ -906,7 +992,7 @@ function ConnectModal({ integration, onClose, onSave }) {
 
 // ── Connected card ────────────────────────────────────────────────────────────
 
-function ConnectedCard({ item, onSettings, onDisconnect, extra }) {
+function ConnectedCard({ item, onSettings, onDisconnect, extra, displayName }) {
   const [syncing, setSyncing] = useState(false);
 
   const handleManualSync = async () => {
@@ -939,11 +1025,15 @@ function ConnectedCard({ item, onSettings, onDisconnect, extra }) {
         </div>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600, fontSize: 13 }}>{item.name}</div>
-          {extra?.shop_name && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>{extra.shop_name}</div>}
+          {(displayName || extra?.shop_name) && (
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
+              {displayName || extra?.shop_name}
+            </div>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 3 }}>
             <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', animation: 'pulse 2s infinite' }} />
             <span style={{ fontSize: 11, color: 'var(--green)', fontWeight: 500 }}>
-              Connected · {extra?.order_count ? `${extra.order_count} orders synced` : 'Live sync'}
+              Connected{extra?.order_count ? ` · ${extra.order_count} orders synced` : ''}
             </span>
           </div>
         </div>
@@ -987,31 +1077,51 @@ function loadConnected() {
 
 export default function IntegrationsPage({ onNavigate }) {
   const [connected, setConnected] = useState(loadConnected);
+  // displayNames: { [channelId]: string } — account name shown on connected card
+  const [displayNames, setDisplayNames] = useState({});
   const [modal, setModal] = useState(null);
   const [shopifyModal, setShopifyModal] = useState(false);
   const [whatsappModal, setWhatsappModal] = useState(false);
   const [search, setSearch] = useState('');
   const [shopifyConn, setShopifyConn] = useState(loadShopifyConnection);
 
-  const handleConnect = (id, extra) => {
+  // Load connection state from backend on mount
+  useEffect(() => {
+    api.get('/api/integrations').then(({ data }) => {
+      const ids = new Set(data.filter(r => r.connected).map(r => r.channel));
+      const names = {};
+      data.filter(r => r.connected && r.display_name).forEach(r => { names[r.channel] = r.display_name; });
+      if (ids.size > 0) {
+        setConnected(prev => new Set([...prev, ...ids]));
+        setDisplayNames(prev => ({ ...prev, ...names }));
+      }
+    }).catch(() => {}); // fail silently — not logged in yet or backend down
+  }, []);
+
+  const handleConnect = (id, extra = {}) => {
     setConnected(s => {
       const n = new Set([...s, id]);
       localStorage.setItem(STORAGE_KEY, JSON.stringify([...n]));
       return n;
     });
+    if (extra?.display_name) {
+      setDisplayNames(prev => ({ ...prev, [id]: extra.display_name }));
+    }
   };
 
   const handleShopifyConnected = (id, info) => {
-    handleConnect(id);
+    handleConnect(id, { display_name: info.shop_name || info.shop_domain });
     setShopifyConn(info);
+    // Trigger catalog import in background
+    api.post('/trigger/catalog-import?channel=shopify').catch(() => {});
     toast.success(`${info.shop_name} connected — ${info.order_count} orders synced`);
   };
 
   const handleDisconnect = async id => {
+    // Call backend to revoke
+    try { await api.delete(`/api/integrations/${id}`); } catch (_) {}
     if (id === 'shopify' && shopifyConn?.shop_domain) {
-      try {
-        await fetch(`${BACKEND}/api/shopify/disconnect?shop_domain=${encodeURIComponent(shopifyConn.shop_domain)}`, { method: 'DELETE' });
-      } catch (_) {}
+      try { await fetch(`/api/shopify/disconnect?shop_domain=${encodeURIComponent(shopifyConn.shop_domain)}`, { method: 'DELETE' }); } catch (_) {}
       localStorage.removeItem(SHOPIFY_STORAGE_KEY);
       setShopifyConn(null);
     }
@@ -1020,6 +1130,7 @@ export default function IntegrationsPage({ onNavigate }) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify([...n]));
       return n;
     });
+    setDisplayNames(prev => { const n = { ...prev }; delete n[id]; return n; });
     toast.info('Integration disconnected');
   };
 
@@ -1075,6 +1186,7 @@ export default function IntegrationsPage({ onNavigate }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
             {connectedItems.map(item => (
               <ConnectedCard key={item.id} item={item}
+                displayName={displayNames[item.id]}
                 extra={item.id === 'shopify' ? shopifyConn : undefined}
                 onSettings={() => toast.info(`${item.name} settings — edit credentials by disconnecting and reconnecting`)}
                 onDisconnect={() => handleDisconnect(item.id)}
@@ -1108,9 +1220,12 @@ export default function IntegrationsPage({ onNavigate }) {
                     </div>
                   </div>
                   <p style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1, margin: 0 }}>{item.desc}</p>
-                  <button className="btn btn-primary" style={{ fontSize: 12, justifyContent: 'center', padding: '7px 0' }}
+                  <button className="btn btn-primary" style={{ fontSize: 12, justifyContent: 'center', padding: '7px 0', gap: 6 }}
                     onClick={() => item.id === 'shopify' ? setShopifyModal(true) : item.id === 'whatsapp' ? setWhatsappModal(true) : setModal(item)}>
-                    + Connect
+                    {item.authType === 'oauth'
+                      ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>Login with {item.name.split(' ')[0]}</>
+                      : '+ Connect'
+                    }
                   </button>
                 </div>
               ))}

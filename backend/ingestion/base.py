@@ -7,6 +7,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_sku_mapper = None
+
+def _get_mapper():
+    global _sku_mapper
+    if _sku_mapper is None:
+        from ..catalog.sku_mapper import SKUMapper
+        _sku_mapper = SKUMapper()
+    return _sku_mapper
+
 
 class BaseIngester(ABC):
     channel: str
@@ -45,9 +54,18 @@ class BaseIngester(ABC):
                 else:
                     result = db.table("orders").insert(order_data).execute()
                     order_id = result.data[0]["id"]
-                    # Insert line items
+                    # Resolve internal SKUs before inserting items
+                    mapper = _get_mapper()
                     for item in order.items:
                         item["order_id"] = order_id
+                        if not item.get("sku"):
+                            resolved = mapper.resolve(
+                                channel=order.channel,
+                                channel_sku_id=item.get("channel_sku_id", ""),
+                                product_name=item.get("name", ""),
+                            )
+                            if resolved:
+                                item["sku"] = resolved
                     if order.items:
                         db.table("order_items").insert(order.items).execute()
                     inserted += 1

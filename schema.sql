@@ -347,3 +347,213 @@ select
 from orders
 group by 1, 2
 order by 1 desc, 2;
+
+-- ============================================================
+-- Phase 2 additions — safe to run on existing DB
+-- All ALTER TABLEs use IF NOT EXISTS / idempotent
+-- ============================================================
+
+-- ── Orders: payment + warehouse + source columns ──────────────
+alter table orders add column if not exists payment_status  text default 'pending';
+alter table orders add column if not exists payment_id      text;
+alter table orders add column if not exists amount_paid     numeric(10,2);
+alter table orders add column if not exists paid_at         timestamptz;
+alter table orders add column if not exists warehouse_id    uuid;
+alter table orders add column if not exists source          text default 'marketplace';
+alter table orders add column if not exists chat_jid        text;
+alter table orders add column if not exists payment_link    text;
+alter table orders add column if not exists payment_link_id text;
+
+-- ── SKUs: extended columns from catalog importers ─────────────
+alter table skus add column if not exists selling_price            numeric(10,2);
+alter table skus add column if not exists product_id               uuid;
+alter table skus add column if not exists barcode                  text;
+alter table skus add column if not exists color                    text;
+alter table skus add column if not exists size                     text;
+alter table skus add column if not exists shopify_variant_id       text;
+alter table skus add column if not exists shopify_inventory_item_id text;
+alter table skus add column if not exists amazon_asin              text;
+alter table skus add column if not exists flipkart_fsn             text;
+alter table skus add column if not exists zoho_item_id             text;
+
+-- ── Listings: pricing + deactivation columns ──────────────────
+alter table listings add column if not exists channel_price              numeric(10,2);
+alter table listings add column if not exists channel_mrp                numeric(10,2);
+alter table listings add column if not exists is_deactivated_by_channel  boolean default false;
+alter table listings drop constraint if exists listings_channel_sku_id_key;
+alter table listings add column if not exists sku_col text;
+
+-- Fix listings unique constraint to (sku, channel) instead of (channel, channel_sku_id)
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'listings_sku_channel_key'
+  ) then
+    alter table listings add constraint listings_sku_channel_key unique (sku, channel);
+  end if;
+end $$;
+
+-- ============================================================
+-- Products / PIM
+-- ============================================================
+create table if not exists products (
+    id                  uuid primary key default uuid_generate_v4(),
+    tenant_id           uuid references tenants(id) on delete cascade,
+    shopify_product_id  text,
+    name                text not null,
+    description         text,
+    brand               text,
+    category            text,
+    sub_category        text,
+    hsn_code            text,
+    gst_rate            numeric(5,2),
+    images              text[] default '{}',
+    tags                text[] default '{}',
+    is_active           boolean default true,
+    created_at          timestamptz default now(),
+    updated_at          timestamptz default now()
+);
+
+create index if not exists idx_products_tenant    on products(tenant_id);
+create index if not exists idx_products_shopify   on products(shopify_product_id);
+create index if not exists idx_skus_product_id    on skus(product_id);
+
+-- ============================================================
+-- Contacts (uploaded CSV + WhatsApp verification)
+-- ============================================================
+create table if not exists contacts (
+    id                  uuid primary key default uuid_generate_v4(),
+    tenant_id           uuid references tenants(id) on delete cascade,
+    name                text not null,
+    phone               text,
+    phone_e164          text,
+    email               text,
+    business_name       text,
+    tags                text[] default '{}',
+    source              text default 'manual',
+    is_on_whatsapp      boolean,
+    whatsapp_jid        text,
+    wa_checked_at       timestamptz,
+    last_messaged_at    timestamptz,
+    notes               text,
+    created_at          timestamptz default now(),
+    updated_at          timestamptz default now(),
+    unique (tenant_id, phone_e164)
+);
+
+create index if not exists idx_contacts_tenant    on contacts(tenant_id);
+create index if not exists idx_contacts_wa_jid    on contacts(whatsapp_jid);
+
+-- ============================================================
+-- Contact Lists (named broadcast groups)
+-- ============================================================
+create table if not exists contact_lists (
+    id          uuid primary key default uuid_generate_v4(),
+    tenant_id   uuid references tenants(id) on delete cascade,
+    name        text not null,
+    created_at  timestamptz default now()
+);
+
+create table if not exists contact_list_members (
+    id          uuid primary key default uuid_generate_v4(),
+    list_id     uuid not null references contact_lists(id) on delete cascade,
+    contact_id  uuid not null references contacts(id) on delete cascade,
+    added_at    timestamptz default now(),
+    unique (list_id, contact_id)
+);
+
+-- ============================================================
+-- Warehouses
+-- ============================================================
+create table if not exists warehouses (
+    id                  uuid primary key default uuid_generate_v4(),
+    tenant_id           uuid references tenants(id) on delete cascade,
+    name                text not null,
+    code                text not null,
+    address             text,
+    city                text,
+    state               text,
+    pincode             text,
+    channels            text[] default '{}',
+    pickup_slot_rules   jsonb default '{}',
+    weight_rules        jsonb default '{}',
+    is_active           boolean default true,
+    created_at          timestamptz default now(),
+    updated_at          timestamptz default now()
+);
+
+create table if not exists warehouse_routing_rules (
+    id              uuid primary key default uuid_generate_v4(),
+    tenant_id       uuid references tenants(id) on delete cascade,
+    warehouse_id    uuid references warehouses(id) on delete cascade,
+    rule_type       text not null,
+    rule_value      text not null,
+    priority        int default 0,
+    created_at      timestamptz default now()
+);
+
+-- ============================================================
+-- Repricing
+-- ============================================================
+create table if not exists repricing_rules (
+    id          uuid primary key default uuid_generate_v4(),
+    sku         text not null references skus(sku) on delete cascade,
+    channel     text,
+    strategy    text not null default 'beat_by_pct',
+    beat_by_pct numeric(5,2) default 1.0,
+    markup_pct  numeric(5,2) default 20.0,
+    min_price   numeric(10,2),
+    max_price   numeric(10,2),
+    is_active   boolean default true,
+    created_at  timestamptz default now(),
+    unique (sku, channel)
+);
+
+create table if not exists repricing_history (
+    id                  uuid primary key default uuid_generate_v4(),
+    sku                 text not null,
+    channel             text,
+    old_price           numeric(10,2),
+    new_price           numeric(10,2),
+    competitor_min      numeric(10,2),
+    strategy            text,
+    rule_id             uuid,
+    created_at          timestamptz default now()
+);
+
+create table if not exists competitor_prices (
+    id                      uuid primary key default uuid_generate_v4(),
+    sku                     text not null references skus(sku) on delete cascade,
+    channel                 text not null,
+    min_competitor_price    numeric(10,2),
+    max_competitor_price    numeric(10,2),
+    our_price               numeric(10,2),
+    fetched_at              timestamptz default now(),
+    unique (sku, channel)
+);
+
+-- ============================================================
+-- COD Blocked Zones
+-- ============================================================
+create table if not exists cod_blocked_zones (
+    id              uuid primary key default uuid_generate_v4(),
+    pincode         text not null unique,
+    state           text,
+    reason          text,
+    rto_rate_pct    numeric(5,2),
+    is_active       boolean default true,
+    blocked_at      timestamptz default now(),
+    unblocked_at    timestamptz
+);
+
+-- ============================================================
+-- Manifests
+-- ============================================================
+create table if not exists manifests (
+    id              uuid primary key default uuid_generate_v4(),
+    manifest_id     text unique not null,
+    warehouse_id    uuid references warehouses(id),
+    courier         text,
+    order_count     int default 0,
+    status          text default 'generated',
+    generated_at    timestamptz default now()
+);

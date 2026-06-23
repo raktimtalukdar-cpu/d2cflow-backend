@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8099';
+// Empty string = relative URLs — works when frontend is served by the same FastAPI server
+const BASE = import.meta.env.VITE_API_URL || '';
 
 export const api = axios.create({ baseURL: BASE });
 

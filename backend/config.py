@@ -40,6 +40,29 @@ class Settings(BaseSettings):
     myntra_supplier_id: str = ""
     myntra_api_key: str = ""
 
+    # Ajio
+    ajio_api_key: str = ""
+    ajio_seller_id: str = ""
+
+    # Nykaa
+    nykaa_api_token: str = ""
+    nykaa_seller_id: str = ""
+
+    # Snapdeal
+    snapdeal_api_token: str = ""
+    snapdeal_seller_id: str = ""
+
+    # FirstCry
+    firstcry_api_token: str = ""
+    firstcry_seller_code: str = ""
+
+    # Zoho Books
+    zoho_access_token: str = ""
+    zoho_organization_id: str = ""
+
+    # Tally (via TallyConnector bridge)
+    tally_host: str = "http://localhost:9000"
+
     # Shopify
     shopify_store_url: str = ""  # e.g. yourstore.myshopify.com
     shopify_access_token: str = ""
@@ -51,18 +74,19 @@ class Settings(BaseSettings):
     # Razorpay
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
 
     # WhatsApp Cloud API (Meta)
     whatsapp_phone_number_id: str = ""
     whatsapp_access_token: str = ""
     whatsapp_business_account_id: str = ""
 
-    # Email (Brevo/SMTP)
-    smtp_host: str = "smtp-relay.brevo.com"
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    email_from: str = ""
+    # MoEngage Transactional Email
+    moengage_app_id: str = ""
+    moengage_api_key: str = ""
+    moengage_api_host: str = "api-01.moengage.com"  # India: api-02, EU: api-03
+    moengage_sender_email: str = ""
+    moengage_sender_name: str = "D2C Flow"
 
     # App
     founder_whatsapp: str = ""  # e.g. 919876543210
@@ -73,9 +97,10 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = [
-            ".env",                                                        # project root
-            os.path.join(os.path.dirname(__file__), ".env"),               # backend/.env
+            ".env",
+            os.path.join(os.path.dirname(__file__), ".env"),
         ]
+        extra = "ignore"
 
 
 @lru_cache

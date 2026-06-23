@@ -3,7 +3,7 @@ Integration management — store and retrieve per-tenant channel credentials.
 OAuth callbacks for Shopify, Amazon SP-API, Flipkart, Meta.
 """
 from typing import Optional, Tuple
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
 import json
@@ -114,8 +114,8 @@ async def shopify_oauth_start(shop: str, user=Depends(get_current_user)):
 
 
 @router.get("/shopify/callback")
-async def shopify_oauth_callback(code: str, shop: str, state: str):
-    """Exchange code for access token and store it."""
+async def shopify_oauth_callback(code: str, shop: str, state: str, background_tasks: BackgroundTasks):
+    """Exchange code for access token, store it, and kick off catalog import."""
     settings = get_settings()
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -125,21 +125,30 @@ async def shopify_oauth_callback(code: str, shop: str, state: str):
         resp.raise_for_status()
         token_data = resp.json()
 
+    creds = {"shop_domain": shop, "access_token": token_data["access_token"]}
     db = get_db()
     db.table("channel_credentials").upsert({
         "tenant_id": state,
         "channel": "shopify",
-        "credentials": json.dumps({"shop_domain": shop, "access_token": token_data["access_token"]}),
+        "credentials": json.dumps(creds),
         "connected": True,
         "display_name": shop,
     }, on_conflict="tenant_id,channel").execute()
 
-    return {"status": "connected", "shop": shop}
+    from ..catalog.shopify_importer import ShopifyCatalogImporter
+    background_tasks.add_task(ShopifyCatalogImporter(creds=creds).import_all)
+
+    return {"status": "connected", "shop": shop, "catalog_import": "started"}
 
 
 @router.get("/amazon/connect")
 async def amazon_oauth_start(user=Depends(get_current_user)):
     settings = get_settings()
+    if not settings.amazon_app_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Amazon SP-API app not registered. Add AMAZON_APP_ID to .env (requires Amazon Seller Partner developer registration)."
+        )
     state = get_tenant_id(user)
     url = (
         "https://sellercentral.amazon.in/apps/authorize/consent"
@@ -150,7 +159,7 @@ async def amazon_oauth_start(user=Depends(get_current_user)):
 
 
 @router.get("/amazon/callback")
-async def amazon_oauth_callback(spapi_oauth_code: str, state: str, selling_partner_id: str):
+async def amazon_oauth_callback(spapi_oauth_code: str, state: str, selling_partner_id: str, background_tasks: BackgroundTasks):
     settings = get_settings()
     async with httpx.AsyncClient() as client:
         resp = await client.post("https://api.amazon.com/auth/o2/token", data={
@@ -162,19 +171,20 @@ async def amazon_oauth_callback(spapi_oauth_code: str, state: str, selling_partn
         resp.raise_for_status()
         tokens = resp.json()
 
+    creds = {"seller_id": selling_partner_id, "refresh_token": tokens["refresh_token"]}
     db = get_db()
     db.table("channel_credentials").upsert({
         "tenant_id": state,
         "channel": "amazon",
-        "credentials": json.dumps({
-            "seller_id": selling_partner_id,
-            "refresh_token": tokens["refresh_token"],
-        }),
+        "credentials": json.dumps(creds),
         "connected": True,
         "display_name": selling_partner_id,
     }, on_conflict="tenant_id,channel").execute()
 
-    return {"status": "connected", "seller_id": selling_partner_id}
+    from ..catalog.amazon_importer import AmazonCatalogImporter
+    background_tasks.add_task(AmazonCatalogImporter(creds=creds).import_all)
+
+    return {"status": "connected", "seller_id": selling_partner_id, "catalog_import": "started"}
 
 
 @router.get("/meta/connect")
@@ -218,6 +228,11 @@ async def meta_oauth_callback(code: str, state: str):
 @router.get("/flipkart/connect")
 async def flipkart_oauth_start(user=Depends(get_current_user)):
     settings = get_settings()
+    if not settings.flipkart_client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Flipkart API app not registered. Add FLIPKART_CLIENT_ID to .env (requires Flipkart Seller Hub API access approval)."
+        )
     state = get_tenant_id(user)
     url = (
         "https://seller.flipkart.com/oauth-service/oauth/authorize"
@@ -229,7 +244,7 @@ async def flipkart_oauth_start(user=Depends(get_current_user)):
 
 
 @router.get("/flipkart/callback")
-async def flipkart_oauth_callback(code: str, state: str):
+async def flipkart_oauth_callback(code: str, state: str, background_tasks: BackgroundTasks):
     settings = get_settings()
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -241,16 +256,21 @@ async def flipkart_oauth_callback(code: str, state: str):
         resp.raise_for_status()
         tokens = resp.json()
 
+    creds = {"app_id": settings.flipkart_client_id, "app_secret": settings.flipkart_client_secret,
+             "refresh_token": tokens["refresh_token"]}
     db = get_db()
     db.table("channel_credentials").upsert({
         "tenant_id": state,
         "channel": "flipkart",
-        "credentials": json.dumps({"refresh_token": tokens["refresh_token"]}),
+        "credentials": json.dumps(creds),
         "connected": True,
         "display_name": "Flipkart Seller",
     }, on_conflict="tenant_id,channel").execute()
 
-    return {"status": "connected"}
+    from ..catalog.flipkart_importer import FlipkartCatalogImporter
+    background_tasks.add_task(FlipkartCatalogImporter(creds=creds).import_all)
+
+    return {"status": "connected", "catalog_import": "started"}
 
 
 # ------------------------------------------------------------------ #
@@ -348,8 +368,26 @@ async def _test_connection(channel: str, creds: dict) -> Tuple[bool, str]:
                 try:
                     r = await client.get(host, timeout=5)
                     return True, f"TallyConnector reachable at {host} · HTTP {r.status_code}"
-                except Exception as e:
+                except Exception:
                     return False, f"Cannot reach {host} — ensure TallyConnector is running on that machine"
+
+            elif channel == "razorpay":
+                key_id = creds.get("key_id", "").strip()
+                key_secret = creds.get("key_secret", "").strip()
+                if not key_id or not key_secret:
+                    return False, "Key ID and Key Secret are required"
+                # Verify by listing payment links (lightweight, read-only)
+                r = await client.get(
+                    "https://api.razorpay.com/v1/payment_links",
+                    auth=(key_id, key_secret),
+                    params={"count": 1},
+                )
+                if r.status_code == 200:
+                    mode = "live" if key_id.startswith("rzp_live") else "test"
+                    return True, f"Connected · Key ID: {key_id[:16]}… · Mode: {mode}"
+                if r.status_code == 401:
+                    return False, "Invalid Key ID or Key Secret — check Razorpay Dashboard → API Keys"
+                return False, f"HTTP {r.status_code} from Razorpay"
 
             elif channel == "amazon":
                 # SP-API requires LWA OAuth token exchange — validate fields are present
@@ -377,20 +415,129 @@ async def _test_connection(channel: str, creds: dict) -> Tuple[bool, str]:
                     return True, f"Flipkart API credentials verified · App ID: {app_id}"
                 return False, "Invalid App ID or App Secret — check Flipkart Seller Hub → API"
 
-            elif channel in ("meesho", "myntra", "ajio", "nykaa"):
-                # Validate required fields are present
-                missing = [k for k, v in creds.items() if not str(v).strip()]
-                if missing:
-                    return False, f"Missing required fields: {', '.join(missing)}"
-                names = {"meesho": "Meesho Supplier", "myntra": "Myntra Partner", "ajio": "Ajio Business", "nykaa": "Nykaa Seller"}
-                return True, f"Credentials saved · {names.get(channel, channel)} API access requires marketplace approval to go live"
+            elif channel == "meesho":
+                if not creds.get("api_token"):
+                    return False, "API token is required"
+                r = await client.get(
+                    "https://external.meesho.com/api/v1/supplier/info",
+                    headers={"api-token": creds["api_token"]},
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    return True, f"Supplier: {d.get('supplier_name', 'Connected')} · {d.get('email', '')}"
+                if r.status_code == 401:
+                    return False, "Invalid API token — check Meesho Supplier Hub → API Settings"
+                return True, "Credentials saved · Meesho will validate on first sync"
 
-            elif channel in ("bluedart", "ecomexpress"):
-                missing = [k for k, v in creds.items() if not str(v).strip()]
-                if missing:
-                    return False, f"Missing required fields: {', '.join(missing)}"
-                names = {"bluedart": "BlueDart", "ecomexpress": "Ecom Express"}
-                return True, f"Credentials saved · {names.get(channel)} API sandbox test on first shipment"
+            elif channel == "myntra":
+                if not creds.get("supplier_id") or not creds.get("api_key"):
+                    return False, "Supplier ID and API key are required"
+                r = await client.get(
+                    "https://api.myntra.com/seller/v1/supplier/info",
+                    headers={
+                        "Authorization": f"Bearer {creds['api_key']}",
+                        "X-Supplier-Id": creds["supplier_id"],
+                    },
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    return True, f"Supplier: {d.get('supplier_name', creds['supplier_id'])} · Myntra Partner Portal"
+                return True, f"Credentials saved · Supplier ID {creds['supplier_id']} — Myntra validates on first sync"
+
+            elif channel == "ajio":
+                if not creds.get("api_key") or not creds.get("seller_id"):
+                    return False, "API key and Seller ID are required"
+                r = await client.get(
+                    "https://business.ajio.com/api/v1/seller/info",
+                    headers={
+                        "Authorization": f"Bearer {creds['api_key']}",
+                        "X-Seller-Id": creds["seller_id"],
+                    },
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    return True, f"Seller: {d.get('seller_name', creds['seller_id'])} · Ajio Business"
+                if r.status_code == 401:
+                    return False, "Invalid API key or Seller ID — check Ajio Business Portal"
+                return True, f"Credentials saved · Seller ID {creds['seller_id']} — Ajio validates on first sync"
+
+            elif channel == "nykaa":
+                if not creds.get("api_token") or not creds.get("seller_id"):
+                    return False, "API token and Seller ID are required"
+                r = await client.get(
+                    "https://seller.nykaa.com/api/v2/seller/profile",
+                    headers={
+                        "Authorization": f"Bearer {creds['api_token']}",
+                        "X-Seller-Id": creds["seller_id"],
+                    },
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    return True, f"Seller: {d.get('seller_name', creds['seller_id'])} · Nykaa Seller Hub"
+                if r.status_code == 401:
+                    return False, "Invalid API token — check Nykaa Seller Hub → API Access"
+                return True, f"Credentials saved · Seller ID {creds['seller_id']} — Nykaa validates on first sync"
+
+            elif channel == "snapdeal":
+                if not creds.get("api_token") or not creds.get("seller_id"):
+                    return False, "API token and Seller ID are required"
+                r = await client.get(
+                    "https://seller.snapdeal.com/api/seller/profile",
+                    headers={
+                        "Authorization": f"Bearer {creds['api_token']}",
+                        "sellerId": creds["seller_id"],
+                    },
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    return True, f"Seller: {d.get('sellerName', creds['seller_id'])} · Snapdeal Seller Zone"
+                if r.status_code == 401:
+                    return False, "Invalid API token — check Snapdeal Seller Zone → API Access"
+                return True, f"Credentials saved · Seller ID {creds['seller_id']} — Snapdeal validates on first sync"
+
+            elif channel == "firstcry":
+                if not creds.get("api_token") or not creds.get("seller_code"):
+                    return False, "API token and Seller Code are required"
+                r = await client.get(
+                    "https://seller.firstcry.com/api/v1/seller/profile",
+                    headers={
+                        "Authorization": f"Bearer {creds['api_token']}",
+                        "X-Seller-Code": creds["seller_code"],
+                    },
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    return True, f"Seller: {d.get('seller_name', creds['seller_code'])} · FirstCry Seller Portal"
+                if r.status_code == 401:
+                    return False, "Invalid API token — check FirstCry Seller Portal → API Settings"
+                return True, f"Credentials saved · Seller Code {creds['seller_code']} — FirstCry validates on first sync"
+
+            elif channel == "zoho":
+                if not creds.get("access_token") or not creds.get("organization_id"):
+                    return False, "Access token and Organization ID are required"
+                r = await client.get(
+                    "https://www.zohoapis.in/books/v3/organizations",
+                    headers={"Authorization": f"Zoho-oauthtoken {creds['access_token']}"},
+                )
+                if r.status_code == 200:
+                    orgs = r.json().get("organizations", [])
+                    match = next((o for o in orgs if str(o.get("organization_id")) == str(creds["organization_id"])), None)
+                    if match:
+                        return True, f"Organization: {match['name']} · GST: {match.get('gst_no', 'not set')}"
+                    if orgs:
+                        return True, f"Connected · {len(orgs)} org(s) found — verify Organization ID is correct"
+                    return False, "No organizations found under this access token"
+                if r.status_code == 401:
+                    return False, "Invalid or expired access token — regenerate via Zoho API Console"
+                return False, r.json().get("message", f"HTTP {r.status_code}")
+
+            elif channel == "tally":
+                host = creds.get("tally_host", "http://localhost:9000").rstrip("/")
+                try:
+                    r = await client.get(host, timeout=5)
+                    return True, f"TallyConnector reachable at {host}"
+                except Exception:
+                    return False, f"Cannot reach {host} — ensure TallyConnector is running on that machine"
 
             return True, "Credentials saved"
 

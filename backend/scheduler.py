@@ -24,8 +24,16 @@ def job_ingest_all_channels():
     from .ingestion.flipkart import FlipkartIngester
     from .ingestion.meesho import MeeshoIngester
     from .ingestion.myntra import MyntraIngester
+    from .ingestion.ajio import AjioIngester
+    from .ingestion.nykaa import NykaaIngester
+    from .ingestion.snapdeal import SnapdealIngester
+    from .ingestion.firstcry import FirstcryIngester
 
-    for IngesterClass in [ShopifyIngester, AmazonIngester, FlipkartIngester, MeeshoIngester, MyntraIngester]:
+    for IngesterClass in [
+        ShopifyIngester, AmazonIngester, FlipkartIngester,
+        MeeshoIngester, MyntraIngester,
+        AjioIngester, NykaaIngester, SnapdealIngester, FirstcryIngester,
+    ]:
         try:
             result = IngesterClass().upsert_orders(since_hours=1)
             logger.info(f"[{IngesterClass.channel}] Ingestion: {result}")
@@ -137,6 +145,58 @@ def job_weekly_stocktake_reminder():
         logger.error(f"Stock-take reminder failed: {e}")
 
 
+def job_repricing():
+    """Run repricing rules every 4 hours."""
+    from .automation.repricing_engine import RepricingEngine
+    try:
+        RepricingEngine().run_all()
+    except Exception as e:
+        logger.error(f"Repricing failed: {e}")
+
+
+def job_listing_sync():
+    """Detect deactivated listings and sync prices every 6 hours."""
+    from .listings.engine import ListingEngine
+    try:
+        engine = ListingEngine()
+        engine.detect_deactivated_listings()
+        engine.sync_prices_to_channels()
+    except Exception as e:
+        logger.error(f"Listing sync failed: {e}")
+
+
+def job_cod_zone_auto_block():
+    """Auto-block high-RTO COD zones nightly."""
+    from .automation.cod_zone_engine import CODZoneEngine
+    try:
+        CODZoneEngine().auto_block_high_rto_zones()
+    except Exception as e:
+        logger.error(f"COD zone auto-block failed: {e}")
+
+
+def job_catalog_import():
+    """Nightly catalog sync — pull product listings from all channels into PIM."""
+    from .catalog.shopify_importer import ShopifyCatalogImporter
+    from .catalog.amazon_importer import AmazonCatalogImporter
+    from .catalog.flipkart_importer import FlipkartCatalogImporter
+    for name, cls in [("shopify", ShopifyCatalogImporter), ("amazon", AmazonCatalogImporter), ("flipkart", FlipkartCatalogImporter)]:
+        try:
+            result = cls().import_all()
+            logger.info(f"[catalog_import:{name}] {result}")
+        except Exception as e:
+            logger.error(f"[catalog_import:{name}] failed: {e}")
+
+
+def job_sku_mapping():
+    """Resolve unmapped order item SKUs against catalog — runs after ingestion."""
+    from .catalog.sku_mapper import SKUMapper
+    try:
+        result = SKUMapper().bulk_map_unmapped_orders()
+        logger.info(f"[sku_mapping] {result}")
+    except Exception as e:
+        logger.error(f"[sku_mapping] failed: {e}")
+
+
 # ------------------------------------------------------------------ #
 # Schedule Registration
 # ------------------------------------------------------------------ #
@@ -172,6 +232,23 @@ def start_scheduler():
     # Weekly stock-take — Monday 9am IST
     scheduler.add_job(job_weekly_stocktake_reminder, CronTrigger(day_of_week="mon", hour=9, minute=0, timezone="Asia/Kolkata"),
                       id="stocktake_reminder", replace_existing=True)
+
+    # Repricing — every 4 hours
+    scheduler.add_job(job_repricing, CronTrigger(hour="4,8,12,16,20"), id="repricing", replace_existing=True)
+
+    # Listing sync (deactivated detection + price push) — every 6 hours
+    scheduler.add_job(job_listing_sync, CronTrigger(hour="2,8,14,20"), id="listing_sync", replace_existing=True)
+
+    # COD zone auto-block — nightly at 2am IST
+    scheduler.add_job(job_cod_zone_auto_block, CronTrigger(hour=2, minute=0, timezone="Asia/Kolkata"),
+                      id="cod_zone_block", replace_existing=True)
+
+    # Catalog import from all channels — nightly at 1am IST
+    scheduler.add_job(job_catalog_import, CronTrigger(hour=1, minute=0, timezone="Asia/Kolkata"),
+                      id="catalog_import", replace_existing=True)
+
+    # SKU mapping — runs 10 min after each ingestion cycle
+    scheduler.add_job(job_sku_mapping, IntervalTrigger(minutes=40), id="sku_mapping", replace_existing=True)
 
     scheduler.start()
     logger.info("Scheduler started with all jobs registered")

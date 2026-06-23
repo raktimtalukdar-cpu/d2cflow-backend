@@ -32,14 +32,22 @@ class FlipkartIngester(BaseIngester):
     _token: str | None = None
     _token_expiry: datetime | None = None
 
+    def __init__(self, creds: dict | None = None):
+        if creds:
+            self._app_id = creds.get("app_id", "")
+            self._app_secret = creds.get("app_secret", "")
+        else:
+            s = get_settings()
+            self._app_id = s.flipkart_client_id
+            self._app_secret = s.flipkart_client_secret
+
     def _get_token(self) -> str:
         if self._token and self._token_expiry and datetime.now(timezone.utc) < self._token_expiry:
             return self._token
-        s = get_settings()
         resp = httpx.post(
             "https://api.flipkart.net/oauth-service/oauth/token",
             params={"grant_type": "client_credentials", "scope": "Seller_Api"},
-            auth=(s.flipkart_client_id, s.flipkart_client_secret),
+            auth=(self._app_id, self._app_secret),
             timeout=15,
         )
         resp.raise_for_status()

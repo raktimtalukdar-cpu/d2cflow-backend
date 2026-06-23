@@ -1,7 +1,9 @@
-import smtplib
+"""
+Email notifications via MoEngage Transactional Email API.
+Docs: https://developers.moengage.com/hc/en-us/articles/4403912419092
+"""
+import httpx
 import logging
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -9,27 +11,30 @@ logger = logging.getLogger(__name__)
 
 class EmailNotifier:
 
-    def _send(self, to: str, subject: str, html: str, text: str = "") -> bool:
+    def _send(self, to: str, subject: str, html: str, to_name: str = "") -> bool:
         s = get_settings()
-        if not s.smtp_user or not s.email_from:
-            logger.warning("Email not configured — skipping send")
+        if not s.moengage_app_id or not s.moengage_api_key:
+            logger.warning("MoEngage not configured — skipping email to %s", to)
             return False
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"] = s.email_from
-            msg["To"] = to
-            if text:
-                msg.attach(MIMEText(text, "plain"))
-            msg.attach(MIMEText(html, "html"))
 
-            with smtplib.SMTP(s.smtp_host, s.smtp_port) as server:
-                server.starttls()
-                server.login(s.smtp_user, s.smtp_password)
-                server.sendmail(s.email_from, to, msg.as_string())
+        payload = {
+            "from": {"name": s.moengage_sender_name, "email": s.moengage_sender_email},
+            "to": [{"name": to_name or to, "email": to}],
+            "subject": subject,
+            "html": html,
+        }
+
+        try:
+            resp = httpx.post(
+                f"https://{s.moengage_api_host}/v1/email/send",
+                auth=(s.moengage_app_id, s.moengage_api_key),
+                json=payload,
+                timeout=15,
+            )
+            resp.raise_for_status()
             return True
         except Exception as e:
-            logger.error(f"Email send failed to {to}: {e}")
+            logger.error("MoEngage email failed to %s: %s", to, e)
             return False
 
     def send_dispatch_alert(self, to: str, name: str, order_id: str,
@@ -41,7 +46,7 @@ class EmailNotifier:
         <p>You can track your shipment on the courier's website.</p>
         <p>Thank you for your purchase!</p>
         """
-        return self._send(to, f"Your order #{order_id} is on the way!", html)
+        return self._send(to, f"Your order #{order_id} is on the way!", html, name)
 
     def send_daily_error_digest(self, to: str, errors: list[dict]) -> bool:
         rows = "".join(
@@ -55,7 +60,7 @@ class EmailNotifier:
           <tbody>{rows}</tbody>
         </table>
         """
-        return self._send(to, f"⚠️ D2C Automation Errors ({len(errors)} issues)", html)
+        return self._send(to, f"D2C Automation Errors ({len(errors)} issues)", html)
 
     def send_po_draft(self, to: str, po: dict) -> bool:
         html = f"""

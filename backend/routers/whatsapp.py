@@ -64,6 +64,41 @@ router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 logger = logging.getLogger(__name__)
 
 
+# ── SQLite Setup ──────────────────────────────────────────────────────────────
+
+def _init_sqlite_db():
+    try:
+        db_dir = os.path.dirname(WHATSAPP_DB_PATH)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        conn = sqlite3.connect(WHATSAPP_DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                chat_jid TEXT,
+                sender TEXT,
+                content TEXT,
+                timestamp TEXT,
+                is_from_me INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chats (
+                jid TEXT PRIMARY KEY,
+                name TEXT,
+                last_message_time TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("Could not initialize local SQLite tables: %s", e)
+
+_init_sqlite_db()
+
+
+
 # ── Persistent JSON helpers ───────────────────────────────────────────────────
 
 def _load_json(path: str, default):
@@ -476,50 +511,130 @@ def _guess_product_name(text: str) -> Optional[str]:
 def _detect_order_intent(message_text: str, products: List[dict]) -> Optional[dict]:
     text_lower = message_text.strip().lower()
     found_kw = [kw for kw in INTENT_KEYWORDS if kw in text_lower]
-    matched = _match_product(text_lower, products)
+    
+    # Try line-by-line parsing for structured cart checkout text
+    lines = [l.strip() for l in message_text.split('\n') if l.strip()]
+    matched_items = []
+    
+    if len(lines) > 1:
+        for line in lines:
+            line_lower = line.lower()
+            matched = _match_product(line_lower, products)
+            if matched:
+                qty = 1
+                for pattern in _QTY_PATTERNS:
+                    m = re.search(pattern, line_lower, re.IGNORECASE)
+                    if m:
+                        try:
+                            qty = int(m.group(1))
+                        except (ValueError, IndexError):
+                            pass
+                        break
+                matched_items.append({
+                    "product": matched,
+                    "qty": qty
+                })
+                
+    # If no line-by-line matches, search for multiple product mentions in a single message
+    if not matched_items:
+        for p in products:
+            p_name = p.get("name", "").lower()
+            p_sku = p.get("sku", "").lower()
+            if (p_name and p_name in text_lower) or (p_sku and p_sku in text_lower):
+                start_idx = text_lower.find(p_name) if p_name in text_lower else text_lower.find(p_sku)
+                window = text_lower[max(0, start_idx-15):min(len(text_lower), start_idx+len(p_name)+15)]
+                qty = 1
+                for pattern in _QTY_PATTERNS:
+                    m = re.search(pattern, window, re.IGNORECASE)
+                    if m:
+                        try:
+                            qty = int(m.group(1))
+                        except (ValueError, IndexError):
+                            pass
+                        break
+                if not any(item["product"]["id"] == p["id"] for item in matched_items):
+                    matched_items.append({
+                        "product": p,
+                        "qty": qty
+                    })
 
-    # Product name alone (without keywords) counts as an enquiry
-    if not found_kw and matched:
-        found_kw = ["product_name_match"]
-
-    if not found_kw:
-        return None
-
-    in_catalog = matched is not None
-    if not matched:
-        guessed = _guess_product_name(message_text)
-        if not guessed:
+    if not matched_items:
+        # Product name alone counts as enquiry
+        matched = _match_product(text_lower, products)
+        if not found_kw and matched:
+            found_kw = ["product_name_match"]
+            
+        if not found_kw:
             return None
-        matched = {"id": None, "name": guessed, "sku": None, "price": None, "stock": None}
+            
+        if not matched:
+            guessed = _guess_product_name(message_text)
+            if not guessed:
+                return None
+            matched = {"id": None, "name": guessed, "sku": None, "price": None, "stock": None}
+            
+        qty = 1
+        for pattern in _QTY_PATTERNS:
+            m = re.search(pattern, text_lower, re.IGNORECASE)
+            if m:
+                try:
+                    qty = int(m.group(1))
+                except (ValueError, IndexError):
+                    pass
+                break
+                
+        price_hint = matched.get("price")
+        pm = re.search(_PRICE_PATTERN, message_text)
+        if pm:
+            price_hint = float(pm.group(1).replace(",", ""))
+            
+        confidence = min(0.4 + len(found_kw) * 0.1 + (0.4 if matched.get("id") else 0.1), 0.99)
+        
+        return {
+            "matched_product": matched,
+            "product_hint": matched.get("name"),
+            "product_id": matched.get("id"),
+            "product_sku": matched.get("sku"),
+            "catalog_price": matched.get("price"),
+            "in_catalog": matched.get("id") is not None,
+            "qty": qty,
+            "price_hint": price_hint,
+            "confidence": round(confidence, 2),
+            "items": [{"name": matched.get("name"), "product_id": matched.get("id"), "qty": qty, "price": matched.get("price") or 0.0}]
+        }
 
-    qty = 1
-    for pattern in _QTY_PATTERNS:
-        m = re.search(pattern, text_lower, re.IGNORECASE)
-        if m:
-            try:
-                qty = int(m.group(1))
-            except (ValueError, IndexError):
-                pass
-            break
-
-    price_hint = matched.get("price")
-    pm = re.search(_PRICE_PATTERN, message_text)
-    if pm:
-        price_hint = float(pm.group(1).replace(",", ""))
-
-    confidence = min(0.4 + len(found_kw) * 0.1 + (0.4 if in_catalog else 0.1), 0.99)
-
+    # Aggregate matched items
+    items_list = []
+    total_price = 0.0
+    for item in matched_items:
+        p = item["product"]
+        qty = item["qty"]
+        price = float(p.get("price") or 0.0)
+        items_list.append({
+            "name": p.get("name"),
+            "product_id": p.get("id"),
+            "qty": qty,
+            "price": price
+        })
+        total_price += price * qty
+        
+    first_item = matched_items[0]
+    confidence = min(0.5 + len(matched_items) * 0.15 + (0.2 if found_kw else 0.0), 0.99)
+    
     return {
-        "matched_product": matched,
-        "product_hint": matched.get("name"),
-        "product_id": matched.get("id"),
-        "product_sku": matched.get("sku"),
-        "catalog_price": matched.get("price"),
-        "in_catalog": in_catalog,
-        "qty": qty,
-        "price_hint": price_hint,
+        "matched_product": first_item["product"],
+        "product_hint": first_item["product"].get("name"),
+        "product_id": first_item["product"].get("id"),
+        "product_sku": first_item["product"].get("sku"),
+        "catalog_price": first_item["product"].get("price"),
+        "in_catalog": True,
+        "qty": sum(item["qty"] for item in matched_items),
+        "price_hint": first_item["product"].get("price"),
         "confidence": round(confidence, 2),
+        "items": items_list,
+        "total_price": total_price
     }
+
 
 
 # ── Product catalog ───────────────────────────────────────────────────────────
@@ -563,59 +678,243 @@ def _deduct_stock(product_id: str, qty: int) -> None:
 # ── Draft reply builder ───────────────────────────────────────────────────────
 
 def _create_draft_reply(detection: dict) -> dict:
-    product = (
-        _get_product_by_id(detection.get("product_id") or "")
-        or _get_product_by_name(detection.get("product_hint") or "")
-    )
-    stock = product.get("stock", product.get("quantity", 99)) if product else 0
-    available = product is not None and stock > 0
+    items = detection.get("items")
     customer_name = detection.get("customer_name", "there")
-    qty = detection.get("qty", 1)
-
-    if available:
-        price = product["price"]
-        msg = (
-            f"Hi {customer_name}! \U0001f44b\n\n"
-            f"We noticed you're interested in *{product['name']}*.\n\n"
-            f"✅ Good news! It's available at *₹{price}*.\n\n"
-            f"Reply *YES* to confirm your order of {qty} unit(s).\n"
-            f"Total: *₹{price * qty}*"
-        )
-        _conversation_states[detection["chat_jid"]] = {
-            "state": "waiting_confirm",
+    
+    if items and len(items) > 1:
+        # Multiple items
+        item_lines = []
+        total = 0.0
+        available_count = 0
+        
+        for item in items:
+            p_id = item.get("product_id")
+            p = _get_product_by_id(p_id) if p_id else None
+            stock = p.get("stock", 99) if p else 0
+            qty = item.get("qty", 1)
+            price = item.get("price") or 0.0
+            
+            if stock > 0:
+                available_count += 1
+                item_lines.append(f"• *{item['name']}* (Qty: {qty}) — ₹{price * qty}")
+                total += price * qty
+            else:
+                item_lines.append(f"• *{item['name']}* (Qty: {qty}) — _Out of stock_ ❌")
+                
+        if available_count > 0:
+            msg = (
+                f"Hi {customer_name}! \U0001f44b\n\n"
+                f"We noticed you're interested in these items:\n"
+                f"{chr(10).join(item_lines)}\n\n"
+                f"Reply *YES* to confirm your order.\n"
+                f"Total: *₹{total}*"
+            )
+            _conversation_states[detection["chat_jid"]] = {
+                "state": "waiting_confirm",
+                "detection_id": detection["id"],
+                "items": [item for item in items if _get_product_by_id(item.get("product_id")).get("stock", 0) > 0],
+                "total": total,
+                "sent_at": None,
+                "qty": sum(item.get("qty", 1) for item in items),
+                "price": total, # Legacy compat
+                "product_name": ", ".join(item.get("name") for item in items)
+            }
+        else:
+            msg = (
+                f"Hi {customer_name}! \U0001f44b\n\n"
+                f"Thank you for your interest.\n\n"
+                f"❌ Unfortunately, the requested items are currently out of stock."
+            )
+            
+        return {
+            "id": str(uuid.uuid4()),
             "detection_id": detection["id"],
-            "product_name": product["name"],
-            "product_id": product.get("id"),
-            "qty": qty,
-            "price": price,
-            "sent_at": None,
+            "chat_jid": detection["chat_jid"],
+            "customer_name": customer_name,
+            "product_name": ", ".join(item.get("name") for item in items),
+            "product_id": items[0].get("product_id") if items else None,
+            "product_available": available_count > 0,
+            "product_price": total,
+            "stock_qty": available_count,
+            "catalog_price": total,
+            "qty": sum(item.get("qty", 1) for item in items),
+            "draft_message": msg,
+            "message_text": msg,
+            "status": "draft",
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
     else:
-        product_name = detection.get("product_hint", "the product")
-        msg = (
-            f"Hi {customer_name}! \U0001f44b\n\n"
-            f"Thank you for your interest in *{product_name}*.\n\n"
-            f"❌ Unfortunately, this item is currently out of stock.\n\n"
-            f"We'll notify you as soon as it's back!"
+        # Legacy/Single product fallback
+        product = (
+            _get_product_by_id(detection.get("product_id") or "")
+            or _get_product_by_name(detection.get("product_hint") or "")
+        )
+        stock = product.get("stock", product.get("quantity", 99)) if product else 0
+        available = product is not None and stock > 0
+        qty = detection.get("qty", 1)
+
+        if available:
+            price = product["price"]
+            msg = (
+                f"Hi {customer_name}! \U0001f44b\n\n"
+                f"We noticed you're interested in *{product['name']}*.\n\n"
+                f"✅ Good news! It's available at *₹{price}*.\n\n"
+                f"Reply *YES* to confirm your order of {qty} unit(s).\n"
+                f"Total: *₹{price * qty}*"
+            )
+            _conversation_states[detection["chat_jid"]] = {
+                "state": "waiting_confirm",
+                "detection_id": detection["id"],
+                "product_name": product["name"],
+                "product_id": product.get("id"),
+                "qty": qty,
+                "price": price,
+                "total": price * qty,
+                "items": [{"name": product["name"], "product_id": product.get("id"), "qty": qty, "price": price}],
+                "sent_at": None,
+            }
+        else:
+            product_name = detection.get("product_hint", "the product")
+            msg = (
+                f"Hi {customer_name}! \U0001f44b\n\n"
+                f"Thank you for your interest in *{product_name}*.\n\n"
+                f"❌ Unfortunately, this item is currently out of stock.\n\n"
+                f"We'll notify you as soon as it's back!"
+            )
+
+        return {
+            "id": str(uuid.uuid4()),
+            "detection_id": detection["id"],
+            "chat_jid": detection["chat_jid"],
+            "customer_name": customer_name,
+            "product_name": detection.get("product_hint", ""),
+            "product_id": detection.get("product_id"),
+            "product_available": available,
+            "product_price": product.get("price") if product else None,
+            "stock_qty": stock,
+            "catalog_price": product.get("price") if product else None,
+            "qty": qty,
+            "draft_message": msg,
+            "message_text": msg,
+            "status": "draft",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+# ── Automated Razorpay payment links ──────────────────────────────────────────
+
+def _generate_and_send_payment_link(order: dict) -> None:
+    try:
+        from .payments import _rz_auth, RAZORPAY_BASE
+        
+        amount = float(order.get("total") or order.get("price", 0.0))
+        if amount <= 0:
+            return
+            
+        customer_name = order.get("customer_name", "Customer")
+        chat_jid = order.get("chat_jid")
+        phone = chat_jid.split("@")[0].split("-")[0] if chat_jid else ""
+        order_id = order.get("id")
+        
+        # Fallback check for Razorpay credentials
+        try:
+            auth = _rz_auth()
+            has_credentials = True
+        except Exception:
+            has_credentials = False
+
+        if not has_credentials:
+            # Demo mode / missing credentials fallback
+            short_url = f"https://rzp.io/i/mock-{order_id}"
+            order["payment_link"] = short_url
+            _persist_all()
+            
+            wa_message = (
+                f"Thank you for confirming your order, {customer_name.split()[0]}! 🎉\n\n"
+                f"[Demo Mode - Razorpay Credentials Not Configured]\n\n"
+                f"Here's your mock payment link:\n\n"
+                f"💳 *Amount:* ₹{amount:,.0f}\n"
+                f"🔗 *Pay here:* {short_url}\n\n"
+                f"Once payment is completed, your order will be shipped. Thank you! 🙏"
+            )
+            
+            if _is_bridge_running():
+                httpx.post(
+                    f"{BRIDGE_API}/api/send",
+                    json={"recipient": chat_jid, "message": wa_message},
+                    timeout=10,
+                )
+            return
+
+        # Real Razorpay link generation
+        amount_paise = int(amount * 100)
+        norm_phone = phone.replace(" ", "").replace("-", "")
+        if not norm_phone.startswith("+"):
+            if norm_phone.startswith("91") and len(norm_phone) == 12:
+                norm_phone = "+" + norm_phone
+            elif len(norm_phone) == 10:
+                norm_phone = "+91" + norm_phone
+            else:
+                norm_phone = "+91" + norm_phone
+
+        payload = {
+            "amount": amount_paise,
+            "currency": "INR",
+            "accept_partial": False,
+            "description": f"Payment for order {order_id}",
+            "customer": {
+                "name": customer_name,
+                "contact": norm_phone,
+                "email": "noreply@d2cflow.in",
+            },
+            "notify": {
+                "sms": True,
+                "email": False,
+            },
+            "reminder_enable": True,
+            "notes": {
+                "order_id": order_id,
+                "source": "whatsapp_bot",
+            },
+            "callback_url": f"{get_settings().app_base_url}/api/payments/webhook",
+            "callback_method": "get",
+        }
+
+        with httpx.Client(timeout=20) as client:
+            resp = client.post(
+                f"{RAZORPAY_BASE}/payment_links",
+                auth=auth,
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        short_url = data.get("short_url")
+        if not short_url:
+            return
+
+        order["payment_link"] = short_url
+        order["payment_link_id"] = data.get("id")
+        _persist_all()
+
+        wa_message = (
+            f"Thank you for confirming your order, {customer_name.split()[0]}! 🎉\n\n"
+            f"Here's your secure payment link powered by Razorpay:\n\n"
+            f"💳 *Amount:* ₹{amount:,.0f}\n"
+            f"🔗 *Pay here:* {short_url}\n\n"
+            f"Once payment is completed, your order will be shipped. Thank you! 🙏"
         )
 
-    return {
-        "id": str(uuid.uuid4()),
-        "detection_id": detection["id"],
-        "chat_jid": detection["chat_jid"],
-        "customer_name": customer_name,
-        "product_name": detection.get("product_hint", ""),
-        "product_id": detection.get("product_id"),
-        "product_available": available,
-        "product_price": product.get("price") if product else None,
-        "stock_qty": stock,
-        "catalog_price": product.get("price") if product else None,
-        "qty": qty,
-        "draft_message": msg,
-        "message_text": msg,
-        "status": "draft",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+        if _is_bridge_running():
+            httpx.post(
+                f"{BRIDGE_API}/api/send",
+                json={"recipient": chat_jid, "message": wa_message},
+                timeout=10,
+            )
+            logger.info("Auto-sent Razorpay link to %s", chat_jid)
+
+    except Exception as e:
+        logger.error("Failed to auto-generate/send Razorpay payment link: %s", e)
 
 
 # ── Confirmed order creator ───────────────────────────────────────────────────
@@ -627,24 +926,40 @@ def _create_confirmed_order(chat_jid: str) -> Optional[dict]:
 
     chat = next((c for c in _monitored_chats if c["chat_jid"] == chat_jid), None)
     customer_name = (chat or {}).get("customer_name", "Customer")
-    qty = state.get("qty", 1)
-    price = state.get("price") or 0
-    product_name = state.get("product_name", "WhatsApp Order")
-    product_id = state.get("product_id")
-
-    if product_id:
-        _deduct_stock(product_id, qty)
+    
+    # Multiple items support
+    items = state.get("items")
+    if items:
+        for item in items:
+            p_id = item.get("product_id")
+            if p_id:
+                _deduct_stock(p_id, item.get("qty", 1))
+        qty = sum(item.get("qty", 1) for item in items)
+        price = state.get("price") or 0.0
+        product_name = state.get("product_name", "WhatsApp Order")
+    else:
+        qty = state.get("qty", 1)
+        price = state.get("price") or 0.0
+        product_name = state.get("product_name", "WhatsApp Order")
+        product_id = state.get("product_id")
+        if product_id:
+            _deduct_stock(product_id, qty)
+        items = [{"name": product_name, "product_id": product_id, "qty": qty, "price": price}]
 
     order = {
-        "id": str(uuid.uuid4()),
+        "id": f"WA-{uuid.uuid4().hex[:8].upper()}",
+        "channel": "whatsapp",
         "chat_jid": chat_jid,
         "customer_name": customer_name,
+        "customer_phone": chat_jid.split("@")[0].split("-")[0],
         "message_text": f"Customer confirmed order for {product_name}",
         "product_hint": product_name,
-        "product_id": product_id,
+        "product_id": items[0].get("product_id") if items else None,
         "qty": qty,
-        "price": price,
-        "catalog_price": price,
+        "price": price / qty if qty else price,
+        "total": price,
+        "catalog_price": price / qty if qty else price,
+        "items": items,
         "confidence": 1.0,
         "status": "confirmed",
         "detected_at": datetime.now(timezone.utc).isoformat(),
@@ -656,12 +971,15 @@ def _create_confirmed_order(chat_jid: str) -> Optional[dict]:
     _conversation_states[chat_jid]["state"] = "idle"
     _persist_all()
 
+    # Generate and send Razorpay payment link automatically
+    _generate_and_send_payment_link(order)
+
     return {
         "order": order,
         "localStorage_payload": {
             "customer": customer_name,
-            "items": [{"name": product_name, "product_id": product_id, "qty": qty, "unit_price": price}],
-            "price": price * qty,
+            "items": items,
+            "price": price,
             "status": "new",
             "channel": "whatsapp",
             "chat_jid": chat_jid,
@@ -842,9 +1160,10 @@ def _check_for_customer_confirmation(chat_jid: str, text: str, msg: dict) -> Non
     product_id = state.get("product_id", "")
     price = state.get("price", 0.0)
     qty = state.get("qty", 1)
+    items = state.get("items")
 
     # Fall back to latest draft/sent reply if state doesn't have product info
-    if not product_name:
+    if not product_name and not items:
         replies = [r for r in _drafted_replies if r["chat_jid"] == chat_jid]
         if replies:
             latest = sorted(replies, key=lambda r: r.get("created_at", ""), reverse=True)[0]
@@ -856,23 +1175,34 @@ def _check_for_customer_confirmation(chat_jid: str, text: str, msg: dict) -> Non
     chat = next((c for c in _monitored_chats if c["chat_jid"] == chat_jid), None)
     customer_name = (chat or {}).get("customer_name", "Customer")
 
-    if product_id:
-        _deduct_stock(product_id, qty)
+    if items:
+        for item in items:
+            p_id = item.get("product_id")
+            if p_id:
+                _deduct_stock(p_id, item.get("qty", 1))
+        total = state.get("total") or price
+        product_hint = product_name or ", ".join(item.get("name") for item in items)
+    else:
+        if product_id:
+            _deduct_stock(product_id, qty)
+        items = [{"name": product_name or "WhatsApp Order", "product_id": product_id, "qty": qty, "price": price}]
+        total = price * qty
+        product_hint = product_name or "WhatsApp Order"
 
     order = {
         "id": f"WA-{uuid.uuid4().hex[:8].upper()}",
         "channel": "whatsapp",
         "chat_jid": chat_jid,
         "customer_name": customer_name,
-        "customer_phone": chat_jid.split("@")[0],
+        "customer_phone": chat_jid.split("@")[0].split("-")[0],
         "message_text": text,
-        "product_hint": product_name,
-        "product_id": product_id,
-        "items": [{"name": product_name or "WhatsApp Order", "product_id": product_id, "qty": qty, "price": price}],
+        "product_hint": product_hint,
+        "product_id": product_id or (items[0].get("product_id") if items else None),
+        "items": items,
         "qty": qty,
-        "price": price,
-        "total": price * qty,
-        "catalog_price": price,
+        "price": price / qty if qty and not items else price,
+        "total": total,
+        "catalog_price": price / qty if qty and not items else price,
         "confidence": 1.0,
         "status": "confirmed",
         "detected_at": datetime.now(timezone.utc).isoformat(),
@@ -889,7 +1219,11 @@ def _check_for_customer_confirmation(chat_jid: str, text: str, msg: dict) -> Non
         _conversation_states[chat_jid]["state"] = "idle"
 
     _persist_all()
-    logger.info("Inbound confirmation: order %s created for %s product=%s", order["id"], customer_name, product_name)
+    logger.info("Inbound confirmation: order %s created for %s product=%s", order["id"], customer_name, product_hint)
+    
+    # Auto-generate and send payment link
+    _generate_and_send_payment_link(order)
+
 
 
 def _run_check_confirmations() -> dict:
@@ -1000,6 +1334,10 @@ def _create_confirmed_order_from_broadcast(jid: str, broadcast: dict) -> Optiona
     _detected_orders.append(order)
     _persist_all()
     logger.info("Order created from broadcast: %s customer=%s product=%s", order["id"], customer_name, product_name)
+    
+    # Auto-generate and send payment link
+    _generate_and_send_payment_link(order)
+    
     return order
 
 
@@ -1309,6 +1647,61 @@ async def start_bridge_endpoint():
         raise HTTPException(status_code=503, detail=f"Bridge binary not found at {BRIDGE_BINARY}.")
     started = _start_bridge()
     return {"started": started, "message": "Bridge started." if started else "Failed to start bridge."}
+
+
+@router.post("/messages")
+async def receive_messages(payload: IncomingMessageBatch):
+    """
+    Ingest a batch of incoming messages and write them to the local SQLite database.
+    Required by wa_scanner.py to push messages from production/remote bridges.
+    """
+    buffered = 0
+    try:
+        conn = sqlite3.connect(WHATSAPP_DB_PATH)
+        cur = conn.cursor()
+        
+        # Ensure chat exists in chats table
+        cur.execute("SELECT COUNT(*) FROM chats WHERE jid = ?", (payload.chat_jid,))
+        if cur.fetchone()[0] == 0:
+            cur.execute(
+                "INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
+                (payload.chat_jid, payload.chat_jid.split("@")[0], datetime.now(timezone.utc).isoformat())
+            )
+            
+        for msg in payload.messages:
+            msg_id = msg.message_id or str(uuid.uuid4())
+            # Use INSERT OR IGNORE to prevent duplicates
+            cur.execute(
+                """INSERT OR IGNORE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    msg_id,
+                    payload.chat_jid,
+                    msg.sender or "Customer",
+                    msg.text,
+                    msg.timestamp or datetime.now(timezone.utc).isoformat(),
+                    1 if msg.sender == "me" else 0
+                )
+            )
+            if cur.rowcount > 0:
+                buffered += 1
+                
+        # Update last_message_time in chats
+        if payload.messages:
+            last_msg = payload.messages[-1]
+            cur.execute(
+                "UPDATE chats SET last_message_time = ? WHERE jid = ?",
+                (last_msg.timestamp or datetime.now(timezone.utc).isoformat(), payload.chat_jid)
+            )
+            
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("Failed to buffer messages: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to buffer messages: {e}")
+        
+    return {"buffered": buffered, "total_buffer": len(payload.messages)}
+
 
 
 @router.get("/search-chats")
@@ -1763,3 +2156,223 @@ async def confirm_from_wa(payload: ConfirmFromWAPayload):
         "chat_jid": conf["chat_jid"],
     }
     return {"status": "confirmed", "confirmation": conf, "localStorage_payload": ls_order}
+
+
+# ------------------------------------------------------------------ #
+# Available chats (all contacts + groups from bridge DB)
+# ------------------------------------------------------------------ #
+
+@router.get("/available-chats")
+async def available_chats(query: Optional[str] = None, limit: int = 100):
+    """
+    All WhatsApp contacts and groups visible to the bridge — not just monitored ones.
+    Used by the share panel to let the user pick recipients.
+    """
+    return {"chats": _wa_list_chats(query=query, limit=limit)}
+
+
+# ------------------------------------------------------------------ #
+# Bulk broadcast — send same message to multiple JIDs
+# ------------------------------------------------------------------ #
+
+class BroadcastBulkPayload(BaseModel):
+    jids: List[str]
+    message: str
+    product_name: Optional[str] = None
+    product_id: Optional[str] = None
+    price: Optional[float] = None
+    qty: Optional[int] = 1
+    track_reply: bool = True
+
+
+@router.post("/broadcast-bulk")
+async def broadcast_bulk(payload: BroadcastBulkPayload):
+    """
+    Send the same message to multiple JIDs at 1 msg/sec.
+    Substitutes {name} from the contacts table when a match is found.
+    Appends each to _pending_broadcasts when track_reply=True.
+    """
+    import time as _time
+
+    if not _is_bridge_running():
+        raise HTTPException(status_code=503, detail="WhatsApp bridge is not running.")
+
+    db = get_db()
+    # Build JID → name map from contacts table
+    try:
+        all_contacts = db.table("contacts").select("whatsapp_jid, name").not_.is_("whatsapp_jid", "null").execute().data
+        jid_to_name = {c["whatsapp_jid"]: c["name"] for c in all_contacts if c.get("whatsapp_jid")}
+    except Exception:
+        jid_to_name = {}
+
+    sent, failed = [], []
+    for jid in payload.jids:
+        contact_name = jid_to_name.get(jid) or jid.replace("@s.whatsapp.net", "").replace("@g.us", "Group")
+        message = payload.message.replace("{name}", contact_name)
+
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                resp = client.post(f"{BRIDGE_API}/api/send", json={"recipient": jid, "message": message})
+                if resp.status_code >= 400:
+                    failed.append({"jid": jid, "error": f"Bridge HTTP {resp.status_code}"})
+                    continue
+        except Exception as e:
+            failed.append({"jid": jid, "error": str(e)})
+            continue
+
+        if payload.track_reply and payload.product_name:
+            if not any(c["chat_jid"] == jid for c in _monitored_chats):
+                _monitored_chats.append({
+                    "chat_jid": jid,
+                    "chat_name": contact_name,
+                    "customer_name": contact_name,
+                    "added_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "broadcast_bulk",
+                })
+            broadcast_entry = {
+                "id": str(uuid.uuid4()),
+                "jid": jid,
+                "customer_name": contact_name,
+                "product_name": payload.product_name,
+                "product_id": payload.product_id or "",
+                "price": payload.price or 0.0,
+                "qty": payload.qty or 1,
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+                "source": "broadcast_bulk",
+                "confirmed": False,
+                "last_confirmed_message_ts": None,
+            }
+            _pending_broadcasts.append(broadcast_entry)
+            _conversation_states[jid] = {
+                "state": "waiting_confirm",
+                "product_name": payload.product_name,
+                "product_id": payload.product_id or "",
+                "price": payload.price or 0.0,
+                "qty": payload.qty or 1,
+                "sent_at": broadcast_entry["sent_at"],
+                "source": "broadcast_bulk",
+            }
+
+        sent.append(jid)
+        _time.sleep(1)  # 1 msg/sec — stay well under WhatsApp rate limits
+
+    _persist_all()
+    return {"sent": len(sent), "failed": failed, "tracking": payload.track_reply}
+
+
+# ------------------------------------------------------------------ #
+# Share catalog item — high-level wrapper over broadcast-bulk
+# ------------------------------------------------------------------ #
+
+class SharePayload(BaseModel):
+    product_id: str
+    contact_ids: List[str] = []      # contacts table IDs
+    list_ids: List[str] = []         # contact_lists table IDs
+    group_jids: List[str] = []       # raw group JIDs
+    template: str = "offer"
+    custom_message: Optional[str] = None
+    track_reply: bool = True
+
+
+@router.post("/share")
+async def share_catalog_item(payload: SharePayload):
+    """
+    Share a product to any combination of contacts, broadcast lists, and groups.
+    Resolves JIDs, generates per-recipient messages, delegates to broadcast-bulk logic.
+    """
+    from ..catalog.link_generator import generate_product_message, product_to_dict
+
+    if not _is_bridge_running():
+        raise HTTPException(status_code=503, detail="WhatsApp bridge is not running.")
+
+    db = get_db()
+
+    # 1. Load product
+    product_row = db.table("products").select("*, skus(selling_price, mrp)").eq("id", payload.product_id).execute()
+    if not product_row.data:
+        raise HTTPException(status_code=404, detail="Product not found")
+    product = product_to_dict(product_row.data[0])
+
+    # 2. Resolve JIDs from contact_ids
+    jid_name_map: dict[str, str] = {}
+    if payload.contact_ids:
+        rows = db.table("contacts").select("whatsapp_jid, name").in_("id", payload.contact_ids).not_.is_("whatsapp_jid", "null").execute().data
+        for r in rows:
+            if r.get("whatsapp_jid"):
+                jid_name_map[r["whatsapp_jid"]] = r["name"]
+
+    # 3. Resolve JIDs from list_ids
+    if payload.list_ids:
+        for list_id in payload.list_ids:
+            members = db.table("contact_list_members").select("contacts(whatsapp_jid, name)").eq("list_id", list_id).execute().data
+            for m in members:
+                c = m.get("contacts") or {}
+                if c.get("whatsapp_jid"):
+                    jid_name_map[c["whatsapp_jid"]] = c.get("name", "")
+
+    # 4. Add raw group JIDs
+    for jid in payload.group_jids:
+        if jid not in jid_name_map:
+            jid_name_map[jid] = jid.replace("@g.us", "Group")
+
+    if not jid_name_map:
+        raise HTTPException(status_code=400, detail="No valid WhatsApp recipients resolved. Verify contacts are checked for WhatsApp.")
+
+    import time as _time
+    sent, failed = [], []
+    for jid, contact_name in jid_name_map.items():
+        if payload.custom_message:
+            message = payload.custom_message.replace("{name}", contact_name)
+        else:
+            message = generate_product_message(product, payload.template, contact_name)
+
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                resp = client.post(f"{BRIDGE_API}/api/send", json={"recipient": jid, "message": message})
+                if resp.status_code >= 400:
+                    failed.append({"jid": jid, "error": f"Bridge HTTP {resp.status_code}"})
+                    continue
+        except Exception as e:
+            failed.append({"jid": jid, "error": str(e)})
+            continue
+
+        if payload.track_reply:
+            if not any(c["chat_jid"] == jid for c in _monitored_chats):
+                _monitored_chats.append({
+                    "chat_jid": jid, "chat_name": contact_name,
+                    "customer_name": contact_name,
+                    "added_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "share",
+                })
+            entry = {
+                "id": str(uuid.uuid4()),
+                "jid": jid, "customer_name": contact_name,
+                "product_name": product["name"],
+                "product_id": payload.product_id,
+                "price": product.get("selling_price") or 0.0,
+                "qty": 1,
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+                "source": "share",
+                "confirmed": False,
+                "last_confirmed_message_ts": None,
+            }
+            _pending_broadcasts.append(entry)
+            _conversation_states[jid] = {
+                "state": "waiting_confirm",
+                "product_name": product["name"],
+                "product_id": payload.product_id,
+                "price": entry["price"], "qty": 1,
+                "sent_at": entry["sent_at"], "source": "share",
+            }
+
+        sent.append({"jid": jid, "name": contact_name})
+        _time.sleep(1)
+
+    _persist_all()
+    return {
+        "product": product["name"],
+        "sent": len(sent),
+        "recipients": sent,
+        "failed": failed,
+        "tracking": payload.track_reply,
+    }
