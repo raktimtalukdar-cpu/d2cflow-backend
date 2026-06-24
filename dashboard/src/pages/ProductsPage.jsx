@@ -1,7 +1,166 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { toast } from '../components/Toast';
 import { getProducts, saveProducts, addProduct, updateProduct, deleteProduct, EXCEL_COLUMNS } from '../data/products';
+
+const BACKEND = '';
+
+// ── Share on WhatsApp modal ───────────────────────────────────────────────────
+
+function ShareWhatsAppModal({ product, onClose }) {
+  const [chats, setChats] = useState([]);
+  const [selected, setSelected] = useState(new Set());
+  const [template, setTemplate] = useState('offer');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    fetch(`${BACKEND}/api/whatsapp/available-chats?limit=100`)
+      .then(r => r.json())
+      .then(d => setChats(d.chats || []))
+      .catch(() => {});
+  }, []);
+
+  const toggle = jid => setSelected(s => {
+    const n = new Set(s);
+    n.has(jid) ? n.delete(jid) : n.add(jid);
+    return n;
+  });
+
+  const handleSend = async () => {
+    if (!selected.size) return;
+    setSending(true);
+    try {
+      const res = await fetch(`${BACKEND}/api/whatsapp/broadcast-bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jids: [...selected],
+          message: buildMessage(),
+          product_name: product.name,
+          price: Number(product.price),
+          track_reply: true,
+        }),
+      });
+      const data = await res.json();
+      setSent(true);
+      toast.success(`Sent to ${data.sent} recipient${data.sent !== 1 ? 's' : ''}`);
+    } catch (e) {
+      toast.error('Send failed — check WhatsApp is connected');
+    }
+    setSending(false);
+  };
+
+  const buildMessage = () => {
+    const price = Number(product.price);
+    const mrp = Number(product.mrp);
+    const discount = mrp > price ? ` ~~₹${mrp.toLocaleString('en-IN')}~~ →` : '';
+    const templates = {
+      offer: `Hi {name}! 👋\n\nWe have an exciting offer!\n\n🛍️ *${product.name}*\n${discount} *₹${price.toLocaleString('en-IN')}*\n\nReply *YES* to order. 🚀`,
+      restock: `Hi {name}! 😊\n\n*${product.name}* is back in stock!\n\nPrice: *₹${price.toLocaleString('en-IN')}*\n\nReply *YES* to reserve. 📦`,
+      new_launch: `Hi {name}! 🎉\n\nNew launch — *${product.name}*!\n\nIntroductory price: *₹${price.toLocaleString('en-IN')}*\n\nReply *BUY* to order! 🛒`,
+    };
+    return templates[template] || templates.offer;
+  };
+
+  const filtered = chats.filter(c =>
+    !search || c.name?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  if (sent) return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 400, background: '#fff', borderRadius: 16, padding: 32, textAlign: 'center' }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
+        <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 8 }}>Sent!</div>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 24 }}>Replies will appear as orders automatically.</div>
+        <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={onClose}>Done</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 520, maxHeight: '85vh', background: '#fff', borderRadius: 16, boxShadow: '0 24px 60px rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+        {/* Header */}
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: '#25D36618', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Share on WhatsApp</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 1 }}>{product.name} · ₹{Number(product.price).toLocaleString('en-IN')}</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-secondary)', padding: 4 }}>×</button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: 20 }}>
+          {/* Message template */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>Message type</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {[['offer', '🔥 Offer'], ['restock', '📦 Back in Stock'], ['new_launch', '🚀 New Launch']].map(([key, label]) => (
+                <button key={key} onClick={() => setTemplate(key)}
+                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 20, cursor: 'pointer', fontFamily: 'inherit', border: '1.5px solid', borderColor: template === key ? '#25D366' : 'var(--border)', background: template === key ? '#25D36618' : 'transparent', color: template === key ? '#25D366' : 'var(--text-secondary)', fontWeight: template === key ? 600 : 400 }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Preview */}
+          <div style={{ background: '#dcf8c6', borderRadius: 12, padding: '10px 14px', fontSize: 13, lineHeight: 1.6, marginBottom: 16, whiteSpace: 'pre-line', maxHeight: 120, overflow: 'hidden' }}>
+            {buildMessage().replace('{name}', 'Customer')}
+          </div>
+
+          {/* Recipients */}
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>
+            Send to · {selected.size > 0 && <span style={{ color: '#25D366' }}>{selected.size} selected</span>}
+          </div>
+          <input
+            className="form-input"
+            placeholder="Search contacts and groups…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ width: '100%', marginBottom: 10 }}
+          />
+          {filtered.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--text-secondary)', fontSize: 13 }}>
+              {chats.length === 0 ? 'Connect WhatsApp Business in Integrations first' : 'No contacts match'}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {filtered.map(c => (
+                <div key={c.jid} onClick={() => toggle(c.jid)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, cursor: 'pointer', background: selected.has(c.jid) ? '#25D36610' : 'transparent', border: `1px solid ${selected.has(c.jid) ? '#25D366' : 'var(--border)'}`, transition: 'all 0.1s' }}>
+                  <div style={{ width: 32, height: 32, borderRadius: '50%', background: c.is_group ? '#3395FF20' : '#25D36620', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0 }}>
+                    {c.is_group ? '👥' : '👤'}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</div>
+                    {c.phone && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{c.phone}</div>}
+                    {c.is_group && <div style={{ fontSize: 11, color: 'var(--blue)' }}>Group</div>}
+                  </div>
+                  {selected.has(c.jid) && <div style={{ width: 18, height: 18, borderRadius: '50%', background: '#25D366', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><path d="M20 6L9 17l-5-5"/></svg>
+                  </div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)' }}>
+          <button onClick={handleSend} disabled={sending || !selected.size}
+            style={{ width: '100%', padding: '12px 0', background: selected.size ? '#25D366' : 'var(--border)', color: '#fff', border: 'none', borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: selected.size ? 'pointer' : 'default', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            {sending ? 'Sending…' : selected.size ? `Send to ${selected.size} recipient${selected.size !== 1 ? 's' : ''}` : 'Select recipients above'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -279,8 +438,9 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [editing, setEditing] = useState(null); // product being edited
+  const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [sharing, setSharing] = useState(null); // product being shared
 
   const refresh = () => setProducts(getProducts());
 
@@ -420,6 +580,11 @@ export default function ProductsPage() {
                 <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-secondary)' }}>{p.category || '—'}</td>
                 <td style={{ padding: '10px 14px' }}>
                   <div style={{ display: 'flex', gap: 4 }}>
+                    <button onClick={() => setSharing(p)}
+                      style={{ fontSize: 11, padding: '3px 8px', background: '#25D36618', color: '#25D366', border: '1px solid rgba(37,211,102,0.3)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                      Share
+                    </button>
                     <button onClick={() => setEditing(p)} style={{ fontSize: 11, padding: '3px 8px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit' }}>Edit</button>
                     <button onClick={() => setConfirmDelete(p)} style={{ fontSize: 11, padding: '3px 8px', background: 'var(--red-light)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 'var(--radius)', cursor: 'pointer', fontFamily: 'inherit' }}>Delete</button>
                   </div>
@@ -447,6 +612,7 @@ export default function ProductsPage() {
       )}
 
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImported={refresh} />}
+      {sharing && <ShareWhatsAppModal product={sharing} onClose={() => setSharing(null)} />}
     </div>
   );
 }
