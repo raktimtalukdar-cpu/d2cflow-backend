@@ -15,7 +15,7 @@ export default function LoginPage({ onNavigate }) {
     setLoading(true);
     const { error } = await signInWithGoogle();
     setLoading(false);
-    if (error) setError(error.message);
+    if (error) setError(error.message || JSON.stringify(error));
   };
 
   const handleMagicLink = async e => {

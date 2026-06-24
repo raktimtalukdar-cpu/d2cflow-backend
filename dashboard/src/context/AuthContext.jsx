@@ -19,8 +19,12 @@ export function AuthProvider({ children }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
-      if (session) localStorage.setItem('d2c_session', JSON.stringify(session));
-      else localStorage.removeItem('d2c_session');
+      if (session) {
+        localStorage.setItem('d2c_session', JSON.stringify(session));
+        localStorage.removeItem('d2c_signed_out');
+      } else {
+        localStorage.removeItem('d2c_session');
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -45,6 +49,9 @@ export function AuthProvider({ children }) {
       provider: 'google',
       options: { redirectTo: window.location.origin },
     });
+    console.log('[Google OAuth] data:', data, 'error:', error);
+    if (error) return { data, error };
+    if (!data?.url) return { data, error: { message: 'Google OAuth not configured in Supabase. Go to Supabase → Authentication → Providers → Google and enable it.' } };
     return { data, error };
   };
 

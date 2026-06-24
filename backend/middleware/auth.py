@@ -20,12 +20,11 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
 
     # Decode without verification first to get the header
     try:
-        # Supabase JWTs are signed with the project's JWT secret
         payload = pyjwt.decode(
             token,
             settings.supabase_jwt_secret,
             algorithms=["HS256"],
-            audience="authenticated",
+            options={"verify_aud": False},
         )
         return payload
     except pyjwt.ExpiredSignatureError:

@@ -47,9 +47,9 @@ function AuthGate() {
   );
 
   const skipAuth = !import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL.includes('placeholder');
-  const signedOut = localStorage.getItem('d2c_signed_out') === '1';
 
-  if (signedOut || (!skipAuth && !user)) {
+  // If Supabase returned a valid user, always go to dashboard — never let localStorage override a real session
+  if (!skipAuth && !user) {
     return (
       <Suspense fallback={<PageLoader />}>
         {authPage === 'login'
@@ -186,7 +186,12 @@ function InviteModal({ onClose, user }) {
 
 function Dashboard() {
   const { signOut, user } = useAuth();
-  const [page, setPage] = useState('home');
+  const [page, setPage] = useState(() => sessionStorage.getItem('d2c_page') || 'home');
+
+  const navigate = (p) => {
+    sessionStorage.setItem('d2c_page', p);
+    setPage(p);
+  };
   const [showInvite, setShowInvite] = useState(false);
 
   const renderPage = () => {
@@ -195,7 +200,7 @@ function Dashboard() {
       return <OrdersPage filterChannel={channel} />;
     }
     switch (page) {
-      case 'home': return <HomePage onNavigate={setPage} />;
+      case 'home': return <HomePage onNavigate={navigate} />;
       case 'orders': return <OrdersPage />;
       case 'whatsapp-orders': return <WhatsAppOrdersPage />;
       case 'crm': return <CRMPage />;
@@ -213,9 +218,9 @@ function Dashboard() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
-      <Sidebar active={page} onNavigate={setPage} />
+      <Sidebar active={page} onNavigate={navigate} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <Topbar page={page} user={user} onSignOut={signOut} onNavigate={setPage} onInvite={() => setShowInvite(true)} />
+        <Topbar page={page} user={user} onSignOut={signOut} onNavigate={navigate} onInvite={() => setShowInvite(true)} />
         <div style={{ flex: 1, overflow: 'auto' }}>
           <Suspense fallback={<PageLoader />}>
             {renderPage()}

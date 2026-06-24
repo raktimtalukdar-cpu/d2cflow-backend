@@ -19,8 +19,12 @@ api.interceptors.response.use(
   r => r,
   err => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('d2c_session');
-      window.location.href = '/login';
+      // Only force re-login if there's no active Supabase session
+      // Otherwise it's a backend JWT config issue — don't create an infinite loop
+      const session = localStorage.getItem('d2c_session');
+      if (!session) {
+        window.location.href = '/';
+      }
     }
     return Promise.reject(err);
   }

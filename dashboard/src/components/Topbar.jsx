@@ -21,7 +21,8 @@ export default function Topbar({ page, user, onSignOut, onNavigate, onInvite }) 
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const displayName = user?.user_metadata?.brand_name || user?.email?.split('@')[0] || 'Raktim T.';
+  const brandProfile = (() => { try { return JSON.parse(localStorage.getItem('d2c_brand_profile') || 'null') || {}; } catch { return {}; } })();
+  const displayName = user?.user_metadata?.brand_name || brandProfile?.name || user?.email?.split('@')[0] || user?.email || 'User';
   const initials = displayName.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase().slice(0, 2) || 'RT';
 
   return (
