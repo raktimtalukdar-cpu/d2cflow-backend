@@ -427,6 +427,10 @@ def update_po_status(po_id: str, status: str):
 
 
 # Serve frontend dashboard
-frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
+frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
+frontend_path = os.path.normpath(frontend_path)
 if os.path.exists(frontend_path):
+    logger.info(f"Serving frontend from {frontend_path}")
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+else:
+    logger.warning(f"Frontend directory not found at {frontend_path} — dashboard will not be served")

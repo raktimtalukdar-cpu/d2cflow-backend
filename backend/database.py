@@ -1,11 +1,13 @@
-import ssl
-import truststore
 from supabase import create_client, Client
 from .config import get_settings
 from functools import lru_cache
 
-# Use macOS system keychain for SSL — fixes uv-installed Python cert issues
-truststore.inject_into_ssl()
+# Fix SSL on macOS with uv-installed Python (no-op on Linux/Vercel)
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
 
 
 @lru_cache
