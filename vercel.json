@@ -1,16 +1,9 @@
 {
+  "version": 2,
   "builds": [
-    { "src": "api/index.py", "use": "@vercel/python" },
-    { "src": "frontend/**", "use": "@vercel/static" }
+    { "src": "api/index.py", "use": "@vercel/python" }
   ],
   "routes": [
-    { "src": "/assets/(.*)", "dest": "/frontend/assets/$1" },
-    { "src": "/favicon.svg", "dest": "/frontend/favicon.svg" },
-    { "src": "/icons.svg", "dest": "/frontend/icons.svg" },
-    { "src": "/api/(.*)", "dest": "/api/index.py" },
-    { "src": "/trigger/(.*)", "dest": "/api/index.py" },
-    { "src": "/health", "dest": "/api/index.py" },
-    { "src": "/p/(.*)", "dest": "/api/index.py" },
-    { "src": "/(.*)", "dest": "/frontend/index.html" }
+    { "src": "/(.*)", "dest": "/api/index.py" }
   ]
 }
