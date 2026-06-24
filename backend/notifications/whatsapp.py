@@ -18,12 +18,10 @@ class WhatsAppNotifier:
 
     def _send(self, phone: str, payload: dict) -> bool:
         s = get_settings()
-        # Normalize phone: strip leading 0, add 91 country code if needed
+        # Normalize phone: strip formatting, preserve country code
         phone = phone.replace(" ", "").replace("-", "").replace("+", "")
         if phone.startswith("0"):
             phone = phone[1:]
-        if not phone.startswith("91"):
-            phone = "91" + phone
 
         try:
             resp = httpx.post(

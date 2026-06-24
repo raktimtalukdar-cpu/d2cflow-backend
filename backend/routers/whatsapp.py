@@ -165,13 +165,12 @@ def _is_bridge_running() -> bool:
 def _is_bridge_authenticated() -> bool:
     for path in [WHATSAPP_DEVICE_DB, os.path.join(BRIDGE_DIR, "whatsapp.db")]:
         try:
-            conn = sqlite3.connect(path)
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM whatsmeow_device")
-            count = cur.fetchone()[0]
-            conn.close()
-            if count > 0:
-                return True
+            with sqlite3.connect(path) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM whatsmeow_device")
+                count = cur.fetchone()[0]
+                if count > 0:
+                    return True
         except Exception:
             pass
     return False
@@ -270,16 +269,15 @@ def _resolve_jid_aliases(phone_jid: str) -> List[str]:
     phone_number = phone_jid.split("@")[0]
     for db_path in [WHATSAPP_DEVICE_DB, os.path.join(BRIDGE_DIR, "whatsapp.db")]:
         try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-            cur.execute("SELECT lid FROM whatsmeow_lid_map WHERE pn = ?", (phone_number,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                lid_jid = f"{row[0]}@lid"
-                if lid_jid not in jids:
-                    jids.append(lid_jid)
-                break
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT lid FROM whatsmeow_lid_map WHERE pn = ?", (phone_number,))
+                row = cur.fetchone()
+                if row:
+                    lid_jid = f"{row[0]}@lid"
+                    if lid_jid not in jids:
+                        jids.append(lid_jid)
+                    break
         except Exception:
             pass
     return jids
@@ -304,16 +302,15 @@ def _wa_list_chats(query: Optional[str] = None, limit: int = 50) -> List[dict]:
     # 1. Load contact name map from whatsmeow_contacts (device DB)
     contact_names: dict = {}
     try:
-        device_conn = sqlite3.connect(WHATSAPP_DEVICE_DB)
-        device_conn.row_factory = sqlite3.Row
-        dc = device_conn.cursor()
-        dc.execute("SELECT their_jid, full_name, push_name, first_name FROM whatsmeow_contacts")
-        for r in dc.fetchall():
-            jid = r["their_jid"]
-            name = r["full_name"] or r["push_name"] or r["first_name"] or ""
-            if name:
-                contact_names[jid] = name
-        device_conn.close()
+        with sqlite3.connect(WHATSAPP_DEVICE_DB) as device_conn:
+            device_conn.row_factory = sqlite3.Row
+            dc = device_conn.cursor()
+            dc.execute("SELECT their_jid, full_name, push_name, first_name FROM whatsmeow_contacts")
+            for r in dc.fetchall():
+                jid = r["their_jid"]
+                name = r["full_name"] or r["push_name"] or r["first_name"] or ""
+                if name:
+                    contact_names[jid] = name
     except Exception as e:
         logger.warning("Could not load contact names from device DB: %s", e)
 
@@ -348,36 +345,35 @@ def _wa_list_chats(query: Optional[str] = None, limit: int = 50) -> List[dict]:
 
     # Then: groups from messages DB chats table
     try:
-        conn = sqlite3.connect(WHATSAPP_DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT jid, name, last_message_time FROM chats
-               WHERE jid LIKE '%@g.us'
-               ORDER BY last_message_time DESC LIMIT ?""",
-            (100,),
-        )
-        for r in cur.fetchall():
-            row = dict(r)
-            jid = row.get("jid", "")
-            if jid in seen_jids:
-                continue
-            seen_jids.add(jid)
-            chat_name = row.get("name") or f"Group {jid.split('@')[0][:12]}"
-
-            if query:
-                q_lower = query.lower()
-                if q_lower not in chat_name.lower():
+        with sqlite3.connect(WHATSAPP_DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT jid, name, last_message_time FROM chats
+                   WHERE jid LIKE '%@g.us'
+                   ORDER BY last_message_time DESC LIMIT ?""",
+                (100,),
+            )
+            for r in cur.fetchall():
+                row = dict(r)
+                jid = row.get("jid", "")
+                if jid in seen_jids:
                     continue
+                seen_jids.add(jid)
+                chat_name = row.get("name") or f"Group {jid.split('@')[0][:12]}"
 
-            rows.append({
-                "jid": jid,
-                "name": chat_name,
-                "phone": "",
-                "is_group": True,
-                "last_message_time": row.get("last_message_time"),
-            })
-        conn.close()
+                if query:
+                    q_lower = query.lower()
+                    if q_lower not in chat_name.lower():
+                        continue
+
+                rows.append({
+                    "jid": jid,
+                    "name": chat_name,
+                    "phone": "",
+                    "is_group": True,
+                    "last_message_time": row.get("last_message_time"),
+                })
     except Exception as e:
         logger.error("WhatsApp DB groups error: %s", e)
 
@@ -392,41 +388,40 @@ def _wa_list_messages(chat_jid: str, limit: int = 100, after_iso: Optional[str] 
     """
     is_group = chat_jid.endswith("@g.us")
     try:
-        conn = sqlite3.connect(WHATSAPP_DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        if after_iso:
-            if is_group or include_sent:
-                cur.execute(
-                    """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
-                       FROM messages WHERE chat_jid = ? AND timestamp > ?
-                       ORDER BY timestamp DESC LIMIT ?""",
-                    (chat_jid, after_iso, limit),
-                )
+        with sqlite3.connect(WHATSAPP_DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            if after_iso:
+                if is_group or include_sent:
+                    cur.execute(
+                        """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
+                           FROM messages WHERE chat_jid = ? AND timestamp > ?
+                           ORDER BY timestamp DESC LIMIT ?""",
+                        (chat_jid, after_iso, limit),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
+                           FROM messages WHERE chat_jid = ? AND timestamp > ? AND is_from_me = 0
+                           ORDER BY timestamp DESC LIMIT ?""",
+                        (chat_jid, after_iso, limit),
+                    )
             else:
-                cur.execute(
-                    """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
-                       FROM messages WHERE chat_jid = ? AND timestamp > ? AND is_from_me = 0
-                       ORDER BY timestamp DESC LIMIT ?""",
-                    (chat_jid, after_iso, limit),
-                )
-        else:
-            if is_group or include_sent:
-                cur.execute(
-                    """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
-                       FROM messages WHERE chat_jid = ?
-                       ORDER BY timestamp DESC LIMIT ?""",
-                    (chat_jid, limit),
-                )
-            else:
-                cur.execute(
-                    """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
-                       FROM messages WHERE chat_jid = ? AND is_from_me = 0
-                       ORDER BY timestamp DESC LIMIT ?""",
-                    (chat_jid, limit),
-                )
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
+                if is_group or include_sent:
+                    cur.execute(
+                        """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
+                           FROM messages WHERE chat_jid = ?
+                           ORDER BY timestamp DESC LIMIT ?""",
+                        (chat_jid, limit),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
+                           FROM messages WHERE chat_jid = ? AND is_from_me = 0
+                           ORDER BY timestamp DESC LIMIT ?""",
+                        (chat_jid, limit),
+                    )
+            rows = [dict(r) for r in cur.fetchall()]
         return rows
     except Exception as e:
         logger.error("WhatsApp DB messages error (%s): %s", chat_jid, e)
@@ -438,16 +433,15 @@ def _wa_list_all_messages(chat_jid: str, limit: int = 10) -> List[dict]:
     all_rows: List[dict] = []
     for jid in _resolve_jid_aliases(chat_jid):
         try:
-            conn = sqlite3.connect(WHATSAPP_DB_PATH)
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(
-                """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
-                   FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?""",
-                (jid, limit),
-            )
-            all_rows.extend(dict(r) for r in cur.fetchall())
-            conn.close()
+            with sqlite3.connect(WHATSAPP_DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute(
+                    """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
+                       FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?""",
+                    (jid, limit),
+                )
+                all_rows.extend(dict(r) for r in cur.fetchall())
         except Exception as e:
             logger.error("WhatsApp DB all-messages error (%s): %s", jid, e)
     # Sort by timestamp descending and return top N
@@ -1365,19 +1359,18 @@ def _scan_self_sent_confirmations() -> dict:
         msgs = []
         for alias_jid in _resolve_jid_aliases(jid):
             try:
-                conn = sqlite3.connect(WHATSAPP_DB_PATH)
-                conn.row_factory = sqlite3.Row
-                cur = conn.cursor()
-                # Look back 48 hours
-                cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat().replace("+00:00", "")
-                cur.execute(
-                    """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
-                       FROM messages WHERE chat_jid = ? AND timestamp > ?
-                       ORDER BY timestamp ASC""",
-                    (alias_jid, cutoff),
-                )
-                msgs.extend(dict(r) for r in cur.fetchall())
-                conn.close()
+                with sqlite3.connect(WHATSAPP_DB_PATH) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+                    # Look back 48 hours
+                    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat().replace("+00:00", "")
+                    cur.execute(
+                        """SELECT id, chat_jid, sender, content AS text, timestamp, is_from_me
+                           FROM messages WHERE chat_jid = ? AND timestamp > ?
+                           ORDER BY timestamp ASC""",
+                        (alias_jid, cutoff),
+                    )
+                    msgs.extend(dict(r) for r in cur.fetchall())
             except Exception as e:
                 logger.error("_scan_self_sent_confirmations DB error (%s): %s", alias_jid, e)
 
@@ -1526,19 +1519,44 @@ def _auto_scan_job() -> None:
         logger.error("Auto-scan failed: %s", e)
 
 
-try:
-    _wa_scheduler.add_job(_auto_scan_job, "interval", minutes=2, id="wa_auto_scan", replace_existing=True)
-    _wa_scheduler.start()
-    logger.info("WhatsApp auto-scanner started (every 2 min)")
-except Exception as e:
-    logger.warning("Could not start WhatsApp auto-scanner: %s", e)
+_wa_auto_scanner_started = False
 
-# Auto-start bridge only if the binary exists (local dev only)
-if os.path.exists(BRIDGE_BINARY):
+
+def start_wa_automation() -> None:
+    """Start the WhatsApp auto-scanner scheduler and bridge.
+    Call this explicitly from the app lifespan instead of relying on module-level side effects.
+    Safe to call multiple times — subsequent calls are no-ops.
+    """
+    global _wa_auto_scanner_started
+    if _wa_auto_scanner_started:
+        return
     try:
-        _start_bridge()
+        _wa_scheduler.add_job(_auto_scan_job, "interval", minutes=2, id="wa_auto_scan", replace_existing=True)
+        _wa_scheduler.start()
+        logger.info("WhatsApp auto-scanner started (every 2 min)")
     except Exception as e:
-        logger.warning("Could not auto-start WhatsApp bridge: %s", e)
+        logger.warning("Could not start WhatsApp auto-scanner: %s", e)
+
+    # Auto-start bridge only if the binary exists (local dev only)
+    if os.path.exists(BRIDGE_BINARY):
+        try:
+            _start_bridge()
+        except Exception as e:
+            logger.warning("Could not auto-start WhatsApp bridge: %s", e)
+    _wa_auto_scanner_started = True
+
+
+def stop_wa_automation() -> None:
+    """Shut down the WhatsApp auto-scanner scheduler."""
+    try:
+        _wa_scheduler.shutdown(wait=False)
+    except Exception:
+        pass
+
+
+# Start on import for backward compatibility, but callers should
+# prefer invoking start_wa_automation() explicitly from the app lifespan.
+start_wa_automation()
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────

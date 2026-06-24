@@ -127,7 +127,7 @@ async def oauth_callback(code: str, shop: str, state: str, background_tasks: Bac
     logger.info(f"Shopify OAuth complete for {shop} ({shop_info.get('name', '')})")
 
     # Redirect browser to frontend success page
-    frontend = "http://localhost:5173"
+    frontend = settings.app_base_url
     return RedirectResponse(url=f"{frontend}/#shopify-connected?shop={shop}&name={shop_info.get('name', shop)}")
 
 
