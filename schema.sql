@@ -546,6 +546,24 @@ create table if not exists cod_blocked_zones (
 );
 
 -- ============================================================
+-- Instagram / WhatsApp purchase-intent signals
+-- ============================================================
+create table if not exists instagram_cues (
+    id              uuid primary key default uuid_generate_v4(),
+    channel         text not null,  -- whatsapp | instagram_comment | instagram_dm
+    sender_id       text not null,
+    sender_name     text,
+    message_text    text,
+    message_id      text unique,
+    media_id        text,
+    status          text default 'pending',  -- pending | replied | ignored
+    reply_text      text,
+    replied_at      timestamptz,
+    created_at      timestamptz default now()
+);
+create index if not exists idx_instagram_cues_status on instagram_cues(status);
+
+-- ============================================================
 -- Manifests
 -- ============================================================
 create table if not exists manifests (

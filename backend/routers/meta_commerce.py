@@ -281,9 +281,31 @@ async def webhook_receive(request: Request):
 
 async def _handle_whatsapp_change(change: dict):
     db = get_db()
+    s = get_settings()
     value = change.get("value", {})
     messages = value.get("messages", [])
     contacts = value.get("contacts", [])
+    phone_number_id = value.get("metadata", {}).get("phone_number_id", s.whatsapp_phone_number_id)
+
+    # Find which tenant owns this phone_number_id
+    cred_row = (
+        db.table("channel_credentials")
+        .select("credentials, tenant_id")
+        .eq("channel", "whatsapp")
+        .execute()
+    )
+    tenant_creds = None
+    for row in (cred_row.data or []):
+        c = json.loads(row.get("credentials") or "{}")
+        if c.get("phone_number_id") == phone_number_id:
+            tenant_creds = c
+            break
+    # Fall back to global settings
+    if not tenant_creds:
+        tenant_creds = {
+            "phone_number_id": s.whatsapp_phone_number_id,
+            "access_token": s.whatsapp_access_token,
+        }
 
     contact_map = {c["wa_id"]: c.get("profile", {}).get("name", "") for c in contacts}
 
@@ -292,24 +314,76 @@ async def _handle_whatsapp_change(change: dict):
         customer_name = contact_map.get(from_number, from_number)
         msg_type = msg.get("type")
         msg_id = msg.get("id")
-        timestamp = msg.get("timestamp", "")
 
         if msg_type == "order":
-            # Customer tapped "Order" on a product card — create order immediately
+            # Customer tapped "Order" on a WhatsApp product card
             order_data = msg.get("order", {})
-            await _create_order_from_wa_product(from_number, customer_name, order_data, db)
+            await _create_order_from_wa_product(from_number, customer_name, order_data, db, tenant_creds)
 
         elif msg_type == "text":
-            text = msg.get("text", {}).get("body", "").lower().strip()
-            # Detect purchase intent + YES replies
-            _store_instagram_cue(db, "whatsapp", from_number, customer_name, text, msg_id)
+            text = msg.get("text", {}).get("body", "").strip()
+            text_lower = text.lower()
+
+            # YES / confirm → find pending order/broadcast → send Razorpay link
+            if text_lower in ("yes", "yes!", "haan", "ha", "ok", "okay", "confirm", "order", "buy"):
+                _handle_yes_reply(from_number, customer_name, db, tenant_creds)
+            elif _has_purchase_intent(text_lower):
+                _store_instagram_cue(db, "whatsapp", from_number, customer_name, text, msg_id)
 
         elif msg_type == "interactive":
-            # Button reply (could be YES from our broadcast)
             reply = msg.get("interactive", {})
             if reply.get("type") == "button_reply":
-                text = reply.get("button_reply", {}).get("title", "").lower()
-                _store_instagram_cue(db, "whatsapp", from_number, customer_name, text, msg_id)
+                btn_title = reply.get("button_reply", {}).get("title", "").lower()
+                if btn_title in ("yes", "confirm", "order", "buy"):
+                    _handle_yes_reply(from_number, customer_name, db, tenant_creds)
+
+
+def _handle_yes_reply(from_number: str, customer_name: str, db, tenant_creds: dict):
+    """
+    Customer replied YES. Find the last broadcast sent to them,
+    create an order, and send a Razorpay payment link.
+    """
+    try:
+        # Look for a pending order for this customer
+        existing = (
+            db.table("orders")
+            .select("id, channel_order_id, total_amount, customer_name")
+            .eq("customer_phone", from_number)
+            .eq("payment_status", "pending")
+            .eq("channel", "whatsapp")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if existing.data:
+            order = existing.data[0]
+            _send_razorpay_for_wa_order(
+                phone=from_number,
+                name=order.get("customer_name") or customer_name,
+                order_id=order["channel_order_id"],
+                amount=float(order["total_amount"] or 0),
+                tenant_creds=tenant_creds,
+            )
+        else:
+            # No pending order — send friendly reply
+            s = get_settings()
+            pid = tenant_creds.get("phone_number_id", s.whatsapp_phone_number_id)
+            token = tenant_creds.get("access_token", s.whatsapp_access_token)
+            if pid and token:
+                httpx.post(
+                    f"{META_BASE}/{pid}/messages",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "messaging_product": "whatsapp",
+                        "to": from_number,
+                        "type": "text",
+                        "text": {"body": "Thanks for your interest! 😊 Please let us know which product you'd like to order and we'll send you the payment link right away."},
+                    },
+                    timeout=10,
+                )
+    except Exception as e:
+        logger.error(f"Failed to handle YES reply from {from_number}: {e}")
 
 
 async def _create_order_from_wa_product(phone: str, name: str, order_data: dict, db):
@@ -354,7 +428,7 @@ async def _create_order_from_wa_product(phone: str, name: str, order_data: dict,
     _send_razorpay_for_wa_order(phone, name, order_id, total)
 
 
-def _send_razorpay_for_wa_order(phone: str, name: str, order_id: str, amount: float):
+def _send_razorpay_for_wa_order(phone: str, name: str, order_id: str, amount: float, tenant_creds: dict = None):
     """Generate Razorpay payment link and send back to the customer on WhatsApp."""
     try:
         s = get_settings()
@@ -380,7 +454,9 @@ def _send_razorpay_for_wa_order(phone: str, name: str, order_id: str, amount: fl
         resp.raise_for_status()
         short_url = resp.json().get("short_url", "")
 
-        if short_url and s.whatsapp_phone_number_id:
+        pid = (tenant_creds or {}).get("phone_number_id") or s.whatsapp_phone_number_id
+        token = (tenant_creds or {}).get("access_token") or s.whatsapp_access_token
+        if short_url and pid and token:
             msg = (
                 f"Thank you for your order! 🎉\n\n"
                 f"💳 *Amount:* ₹{amount:,.0f}\n"
@@ -388,8 +464,8 @@ def _send_razorpay_for_wa_order(phone: str, name: str, order_id: str, amount: fl
                 f"Complete payment to confirm dispatch. Powered by Razorpay 🙏"
             )
             httpx.post(
-                f"{META_BASE}/{s.whatsapp_phone_number_id}/messages",
-                headers={"Authorization": f"Bearer {s.whatsapp_access_token}"},
+                f"{META_BASE}/{pid}/messages",
+                headers={"Authorization": f"Bearer {token}"},
                 json={"messaging_product": "whatsapp", "to": phone,
                       "type": "text", "text": {"body": msg}},
                 timeout=10,

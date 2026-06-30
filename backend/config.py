@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Meta App
     meta_app_id: str = ""
     meta_app_secret: str = ""
+    meta_webhook_verify_token: str = "d2cflow-webhook"
 
     # Amazon SP-API
     amazon_refresh_token: str = ""
