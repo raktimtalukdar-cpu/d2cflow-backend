@@ -178,23 +178,9 @@ def _is_bridge_authenticated() -> bool:
 
 
 def _qr_data_to_b64(qr_data: str) -> Optional[str]:
-    try:
-        import qrcode  # type: ignore[import]
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=8,
-            border=4,
-        )
-        qr.add_data(qr_data)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
-    except Exception as e:
-        logger.warning("Could not generate QR PNG: %s", e)
-        return None
+    # Return the raw QR data string — frontend renders it using react-qr-code
+    # Prefix with "qr:" so frontend knows it's raw data, not a base64 PNG
+    return f"qr:{qr_data}" if qr_data else None
 
 
 def _parse_qr_from_output(line: str) -> Optional[str]:

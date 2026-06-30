@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { toast } from '../components/Toast';
 import { getOrders, saveOrders } from '../data/orders';
 import { api } from '../lib/api';
+import QRCode from 'react-qr-code';
 
 const BACKEND = '';
 
@@ -526,18 +527,84 @@ async function waFetch(path, options = {}) {
 }
 
 function WhatsAppModal({ onClose, onConnected }) {
+  // step: idle | starting | qr | connected
+  const [step, setStep] = useState('idle');
+  const [qrData, setQrData] = useState(null);
   const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [error, setError] = useState('');
+  const pollRef = useRef(null);
 
+  // Check initial bridge state on open
   useEffect(() => {
-    waFetch('/api/whatsapp/detected-orders')
-      .then(d => { setOrders(d.orders || []); setLoading(false); })
-      .catch(() => setLoading(false));
-    onConnected('whatsapp', {});
+    waFetch('/api/whatsapp/bridge-status')
+      .then(d => {
+        if (d.connected) {
+          setStep('connected');
+          loadOrders();
+          onConnected('whatsapp', {});
+        } else if (d.qr_available && d.qr_b64) {
+          setQrData(d.qr_b64.replace(/^qr:/, ''));
+          setStep('qr');
+          startPolling();
+        }
+      })
+      .catch(() => {});
+    return () => stopPolling();
   }, []);
 
+  const startPolling = () => {
+    if (pollRef.current) return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const d = await waFetch('/api/whatsapp/bridge-status');
+        if (d.connected) {
+          stopPolling();
+          setStep('connected');
+          setQrData(null);
+          loadOrders();
+          onConnected('whatsapp', {});
+          toast.success('WhatsApp connected! 🎉');
+        } else if (d.qr_b64) {
+          setQrData(d.qr_b64.replace(/^qr:/, ''));
+          setStep('qr');
+        }
+      } catch (_) {}
+    }, 2000);
+  };
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
+  const handleConnect = async () => {
+    setError('');
+    setStep('starting');
+    try {
+      await waFetch('/api/whatsapp/start-bridge', { method: 'POST' });
+      setStep('qr');
+      startPolling();
+      // Get initial QR immediately
+      setTimeout(async () => {
+        try {
+          const d = await waFetch('/api/whatsapp/bridge-status');
+          if (d.qr_b64) setQrData(d.qr_b64.replace(/^qr:/, ''));
+        } catch (_) {}
+      }, 2000);
+    } catch (e) {
+      setError(e.message || 'Could not start WhatsApp bridge. Make sure you are running the server locally.');
+      setStep('idle');
+    }
+  };
+
+  const loadOrders = () => {
+    setOrdersLoading(true);
+    waFetch('/api/whatsapp/detected-orders')
+      .then(d => { setOrders(d.orders || []); setOrdersLoading(false); })
+      .catch(() => setOrdersLoading(false));
+  };
+
   const pendingCount = orders.filter(o => o.status === 'pending').length;
-  const BACKEND_URL = window.location.origin;
 
   const handleConfirm = async (order) => {
     try {
@@ -545,7 +612,7 @@ function WhatsAppModal({ onClose, onConnected }) {
       const { addOrder } = await import('../data/orders');
       addOrder(res.localStorage_payload);
       setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: 'confirmed' } : o));
-      toast.success(`Order confirmed for ${order.customer_name}`);
+      toast.success(`Order confirmed · Payment link sent to ${order.customer_name}`);
     } catch (e) { toast.error(e.message || 'Failed'); }
   };
 
@@ -557,55 +624,127 @@ function WhatsAppModal({ onClose, onConnected }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={step !== 'starting' ? onClose : undefined}>
       <div onClick={e => e.stopPropagation()} className="animate-in"
-        style={{ width: 560, maxHeight: '85vh', background: '#fff', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        style={{ width: step === 'connected' ? 600 : 440, maxHeight: '90vh', background: '#fff', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
 
         <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ width: 44, height: 44, borderRadius: 12, background: '#25D36618', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>💬</div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>WhatsApp Business</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-              <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#25D366' }} />
-              <span style={{ fontSize: 12, color: '#25D366', fontWeight: 500 }}>Connected · Messages auto-detected</span>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Connect WhatsApp</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 1 }}>
+              {step === 'idle' && 'Scan QR to link your WhatsApp account'}
+              {step === 'starting' && 'Starting connection…'}
+              {step === 'qr' && 'Open WhatsApp → Linked Devices → Scan QR'}
+              {step === 'connected' && <span style={{ color: '#25D366', fontWeight: 500 }}>✅ Connected · All messages scanned automatically</span>}
             </div>
           </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--text-secondary)', display: 'flex' }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          </button>
+          {step !== 'starting' && (
+            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--text-secondary)', display: 'flex' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          )}
         </div>
 
-        <div style={{ overflowY: 'auto', flex: 1, padding: 20 }}>
-          {/* Webhook setup */}
-          <div style={{ background: '#f0fdf4', border: '1px solid rgba(37,211,102,0.25)', borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: '#166534', marginBottom: 6 }}>✅ All incoming messages auto-detected</div>
-            <div style={{ fontSize: 12, color: '#166534', lineHeight: 1.7 }}>
-              Once your Meta webhook is configured, every customer message is automatically scanned for order intent — no manual setup per chat needed.
-            </div>
-            <div style={{ marginTop: 10, background: '#fff', borderRadius: 6, padding: '8px 12px', fontSize: 11, fontFamily: 'monospace', color: '#166534', border: '1px solid rgba(37,211,102,0.3)', wordBreak: 'break-all' }}>
-              Webhook URL: <strong>{BACKEND_URL}/api/whatsapp/webhook</strong>
-            </div>
-            <div style={{ fontSize: 11, color: '#166534', marginTop: 6, opacity: 0.8 }}>
-              Add this in Meta Business → WhatsApp → Configuration → Webhook
-            </div>
-          </div>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
 
-          {/* Detected orders */}
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10 }}>
-            Incoming orders {pendingCount > 0 && <span style={{ background: '#fef9c3', color: '#854d0e', borderRadius: 20, padding: '2px 8px', fontSize: 11, textTransform: 'none', fontWeight: 600, marginLeft: 6 }}>{pendingCount} pending</span>}
-          </div>
-
-          {loading ? (
-            <div style={{ textAlign: 'center', padding: 32, color: 'var(--text-secondary)' }}>Loading…</div>
-          ) : orders.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-secondary)', fontSize: 13 }}>
-              <div style={{ fontSize: 32, marginBottom: 10 }}>📭</div>
-              No orders yet. Once customers message you, order intents appear here automatically.
+          {/* IDLE — connect button */}
+          {step === 'idle' && (
+            <div style={{ padding: 32, textAlign: 'center' }}>
+              <div style={{ fontSize: 56, marginBottom: 16 }}>📱</div>
+              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>Connect your WhatsApp</div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 24, lineHeight: 1.7 }}>
+                Link your existing WhatsApp account — personal or Business.<br />
+                All incoming customer messages are scanned automatically.
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24, textAlign: 'left', background: 'var(--surface-2)', borderRadius: 10, padding: '14px 16px' }}>
+                {[
+                  ['📩', 'Customers message you → order intent auto-detected'],
+                  ['💳', 'They confirm → Razorpay payment link sent instantly'],
+                  ['📦', 'Payment done → Shiprocket shipment created'],
+                  ['✅', 'Tracking number sent back to customer automatically'],
+                ].map(([icon, text]) => (
+                  <div key={text} style={{ display: 'flex', gap: 10, fontSize: 13 }}>
+                    <span>{icon}</span><span style={{ color: 'var(--text-secondary)' }}>{text}</span>
+                  </div>
+                ))}
+              </div>
+              {error && (
+                <div style={{ background: 'var(--red-light)', color: 'var(--red)', borderRadius: 8, padding: '10px 14px', fontSize: 12, marginBottom: 16, textAlign: 'left' }}>
+                  {error}
+                </div>
+              )}
+              <button onClick={handleConnect} className="btn btn-primary"
+                style={{ width: '100%', justifyContent: 'center', height: 44, fontSize: 15, background: '#25D366', borderColor: '#25D366', gap: 8 }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                Connect WhatsApp
+              </button>
             </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {orders.map(order => (
-                <div key={order.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', background: order.status === 'pending' ? '#fff' : 'var(--surface-2)' }}>
+          )}
+
+          {/* STARTING */}
+          {step === 'starting' && (
+            <div style={{ padding: 48, textAlign: 'center' }}>
+              <div style={{ width: 44, height: 44, border: '3px solid #25D36640', borderTop: '3px solid #25D366', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 16px' }} />
+              <div style={{ fontWeight: 600, fontSize: 15 }}>Starting WhatsApp bridge…</div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>This takes a few seconds</div>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
+
+          {/* QR CODE */}
+          {step === 'qr' && (
+            <div style={{ padding: '24px 32px', textAlign: 'center' }}>
+              <div style={{ background: '#f0fdf4', border: '1px solid rgba(37,211,102,0.3)', borderRadius: 10, padding: '10px 14px', marginBottom: 20, fontSize: 13, color: '#166534' }}>
+                <strong>Open WhatsApp</strong> → tap ⋮ Menu → <strong>Linked Devices</strong> → <strong>Link a Device</strong> → scan this QR
+              </div>
+
+              {qrData ? (
+                <div style={{ display: 'inline-block', padding: 16, background: '#fff', border: '2px solid var(--border)', borderRadius: 12, marginBottom: 16 }}>
+                  <QRCode value={qrData} size={220} />
+                </div>
+              ) : (
+                <div style={{ width: 252, height: 252, background: 'var(--surface-2)', borderRadius: 12, margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: 13 }}>
+                  Generating QR…
+                </div>
+              )}
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#25D366', animation: 'pulse 1.5s infinite' }} />
+                Waiting for scan…
+                <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-disabled)', marginTop: 6 }}>QR refreshes every 20 seconds</div>
+            </div>
+          )}
+
+          {/* CONNECTED */}
+          {step === 'connected' && (
+            <div style={{ padding: 20 }}>
+              <div style={{ background: '#f0fdf4', border: '1px solid rgba(37,211,102,0.25)', borderRadius: 10, padding: '14px 16px', marginBottom: 20 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#166534', marginBottom: 8 }}>🟢 Live — scanning messages every 2 minutes</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {['Customer messages detected as orders automatically', 'YES reply → Razorpay payment link sent instantly', 'Payment confirmed → Shiprocket shipment created'].map(t => (
+                    <div key={t} style={{ display: 'flex', gap: 8, fontSize: 12, color: '#166534' }}>
+                      <span>✓</span><span>{t}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10 }}>
+                Incoming orders {pendingCount > 0 && <span style={{ background: '#fef9c3', color: '#854d0e', borderRadius: 20, padding: '2px 8px', fontSize: 11, textTransform: 'none', fontWeight: 600, marginLeft: 6 }}>{pendingCount} pending</span>}
+              </div>
+
+              {ordersLoading ? (
+                <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)' }}>Loading…</div>
+              ) : orders.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-secondary)', fontSize: 13 }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
+                  No orders yet. When customers message you, they appear here automatically.
+                </div>
+              ) : orders.map(order => (
+                <div key={order.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', marginBottom: 8, background: order.status === 'pending' ? '#fff' : 'var(--surface-2)' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
@@ -632,6 +771,7 @@ function WhatsAppModal({ onClose, onConnected }) {
               ))}
             </div>
           )}
+
         </div>
       </div>
     </div>
