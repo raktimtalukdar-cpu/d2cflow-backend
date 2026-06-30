@@ -26,6 +26,7 @@ from .routers import analytics as analytics_router
 from .routers import contacts as contacts_router
 from .routers import product_page as product_page_router
 from .routers import integration_guides as guides_router
+from .routers import meta_commerce as meta_commerce_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ app.include_router(warehouses_router.router)
 app.include_router(returns_router.router)
 app.include_router(analytics_router.router)
 app.include_router(contacts_router.router)
+app.include_router(meta_commerce_router.router)
 app.include_router(product_page_router.router)
 app.include_router(guides_router.router)
 

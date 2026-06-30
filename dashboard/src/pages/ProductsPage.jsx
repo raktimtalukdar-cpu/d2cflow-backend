@@ -174,6 +174,205 @@ function StockBadge({ stock }) {
 
 const EMPTY_FORM = { name: '', sku: '', ean: '', price: '', mrp: '', stock: '', category: '', weight: '' };
 
+// ── PDF Import Modal ──────────────────────────────────────────────────────────
+
+function PdfImportModal({ onClose, onImported }) {
+  const [step, setStep] = useState('upload'); // upload | preview | saving | done
+  const [dragging, setDragging] = useState(false);
+  const [products, setProducts] = useState([]);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const fileRef = useRef();
+
+  const handleFile = async (file) => {
+    if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Please upload a PDF file');
+      return;
+    }
+    setError('');
+    setStep('loading');
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch(`${BACKEND}/api/catalog/import/pdf/preview`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to parse PDF');
+      setProducts(data.preview.map((p, i) => ({ ...p, _id: i, _keep: true })));
+      setStep('preview');
+    } catch (e) {
+      setError(e.message);
+      setStep('upload');
+    }
+  };
+
+  const handleDrop = e => {
+    e.preventDefault();
+    setDragging(false);
+    handleFile(e.dataTransfer.files[0]);
+  };
+
+  const updateProduct = (id, field, value) =>
+    setProducts(ps => ps.map(p => p._id === id ? { ...p, [field]: value } : p));
+
+  const handleConfirm = async () => {
+    setSaving(true);
+    const toSave = products.filter(p => p._keep);
+    try {
+      const res = await fetch(`${BACKEND}/api/catalog/import/pdf/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ products: toSave }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Save failed');
+      onImported(data.created);
+      setStep('done');
+    } catch (e) {
+      setError(e.message);
+    }
+    setSaving(false);
+  };
+
+  const kept = products.filter(p => p._keep).length;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={step !== 'loading' && step !== 'saving' ? onClose : undefined}>
+      <div onClick={e => e.stopPropagation()} style={{ width: step === 'preview' ? 720 : 480, maxHeight: '88vh', background: '#fff', borderRadius: 16, boxShadow: '0 24px 60px rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+        {/* Header */}
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: '#ef444418', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>📄</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Import PDF Catalog</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 1 }}>
+              {step === 'upload' && 'Upload any PDF catalog — we extract the products automatically'}
+              {step === 'loading' && 'Reading your catalog…'}
+              {step === 'preview' && `${products.length} products found · ${kept} selected`}
+              {step === 'done' && 'Import complete!'}
+            </div>
+          </div>
+          {step !== 'loading' && <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text-secondary)', padding: 4 }}>×</button>}
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: step === 'preview' ? 0 : 24 }}>
+
+          {/* Upload step */}
+          {(step === 'upload' || step === 'loading') && (
+            <div>
+              <div
+                onDragOver={e => { e.preventDefault(); setDragging(true); }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={handleDrop}
+                onClick={() => step === 'upload' && fileRef.current?.click()}
+                style={{
+                  border: `2px dashed ${dragging ? 'var(--blue)' : 'var(--border)'}`,
+                  borderRadius: 12, padding: '48px 32px', textAlign: 'center', cursor: step === 'upload' ? 'pointer' : 'default',
+                  background: dragging ? '#f0f7ff' : 'var(--surface-2)', transition: 'all 0.15s',
+                }}>
+                {step === 'loading' ? (
+                  <>
+                    <div style={{ fontSize: 36, marginBottom: 12 }}>⏳</div>
+                    <div style={{ fontWeight: 600, fontSize: 15 }}>Extracting products…</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>Reading your catalog, this takes a few seconds</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 44, marginBottom: 12 }}>📄</div>
+                    <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 6 }}>Drop your PDF catalog here</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>or click to browse · Max 20MB</div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                      {['Price lists', 'Product brochures', 'Wholesale catalogs', 'Rate cards'].map(t => (
+                        <span key={t} style={{ background: '#eff6ff', color: 'var(--blue)', borderRadius: 20, padding: '3px 10px', fontSize: 11, fontWeight: 500 }}>{t}</span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              <input ref={fileRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
+              {error && <div style={{ background: 'var(--red-light)', color: 'var(--red)', borderRadius: 8, padding: '10px 14px', fontSize: 13, marginTop: 12 }}>{error}</div>}
+            </div>
+          )}
+
+          {/* Preview step */}
+          {step === 'preview' && (
+            <div>
+              <div style={{ padding: '12px 20px', background: '#f0f9ff', borderBottom: '1px solid #bae6fd', fontSize: 13, color: '#0369a1', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>✅ Review and edit before saving. Uncheck products you don't want.</span>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
+                      <th style={{ padding: '8px 12px', width: 36 }}></th>
+                      {['Product Name', 'SKU', 'Price (₹)', 'MRP (₹)', 'Category'].map(h => (
+                        <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.4px', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {products.map(p => (
+                      <tr key={p._id} style={{ borderBottom: '1px solid var(--border)', opacity: p._keep ? 1 : 0.4 }}>
+                        <td style={{ padding: '6px 12px' }}>
+                          <input type="checkbox" checked={!!p._keep} onChange={e => updateProduct(p._id, '_keep', e.target.checked)} />
+                        </td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <input value={p.name} onChange={e => updateProduct(p._id, 'name', e.target.value)}
+                            style={{ width: '100%', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 6px', fontSize: 12, fontFamily: 'inherit' }} />
+                        </td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <input value={p.sku || ''} onChange={e => updateProduct(p._id, 'sku', e.target.value)}
+                            style={{ width: 90, border: '1px solid var(--border)', borderRadius: 4, padding: '3px 6px', fontSize: 12, fontFamily: 'monospace' }} />
+                        </td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <input type="number" value={p.price || ''} onChange={e => updateProduct(p._id, 'price', e.target.value)}
+                            style={{ width: 80, border: '1px solid var(--border)', borderRadius: 4, padding: '3px 6px', fontSize: 12, fontFamily: 'inherit' }} />
+                        </td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <input type="number" value={p.mrp || ''} onChange={e => updateProduct(p._id, 'mrp', e.target.value)}
+                            style={{ width: 80, border: '1px solid var(--border)', borderRadius: 4, padding: '3px 6px', fontSize: 12, fontFamily: 'inherit' }} />
+                        </td>
+                        <td style={{ padding: '6px 8px' }}>
+                          <input value={p.category || ''} onChange={e => updateProduct(p._id, 'category', e.target.value)}
+                            style={{ width: 100, border: '1px solid var(--border)', borderRadius: 4, padding: '3px 6px', fontSize: 12, fontFamily: 'inherit' }} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {error && <div style={{ background: 'var(--red-light)', color: 'var(--red)', borderRadius: 8, padding: '10px 14px', fontSize: 13, margin: '12px 20px' }}>{error}</div>}
+            </div>
+          )}
+
+          {/* Done */}
+          {step === 'done' && (
+            <div style={{ textAlign: 'center', padding: '32px 24px' }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>🎉</div>
+              <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 8 }}>Products added!</div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 24 }}>
+                They're now in your catalog with a Share button on each one.
+              </div>
+              <button className="btn btn-primary" style={{ justifyContent: 'center' }} onClick={onClose}>View catalog</button>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {step === 'preview' && (
+          <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <button className="btn btn-secondary" onClick={() => setStep('upload')}>← Re-upload</button>
+            <button className="btn btn-primary" onClick={handleConfirm} disabled={saving || kept === 0}
+              style={{ gap: 6, minWidth: 160, justifyContent: 'center' }}>
+              {saving ? 'Saving…' : `Add ${kept} product${kept !== 1 ? 's' : ''} to catalog`}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FormField({ label, k, type = 'text', required, placeholder, hint, value, onChange }) {
   return (
     <div>
@@ -440,7 +639,8 @@ export default function ProductsPage() {
   const [showImport, setShowImport] = useState(false);
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [sharing, setSharing] = useState(null); // product being shared
+  const [sharing, setSharing] = useState(null);
+  const [showPdfImport, setShowPdfImport] = useState(false);
 
   const refresh = () => setProducts(getProducts());
 
@@ -513,6 +713,9 @@ export default function ProductsPage() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-secondary" style={{ fontSize: 12, gap: 6 }} onClick={() => setShowPdfImport(true)}>
+            📄 Import PDF
+          </button>
           <button className="btn btn-secondary" style={{ fontSize: 12, gap: 6 }} onClick={() => setShowImport(true)}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4 M17 8l-5-5-5 5 M12 3v12"/></svg>
             Import Excel
@@ -612,6 +815,7 @@ export default function ProductsPage() {
       )}
 
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImported={refresh} />}
+      {showPdfImport && <PdfImportModal onClose={() => setShowPdfImport(false)} onImported={(count) => { toast.success(`${count} products added`); refresh(); setShowPdfImport(false); }} />}
       {sharing && <ShareWhatsAppModal product={sharing} onClose={() => setSharing(null)} />}
     </div>
   );

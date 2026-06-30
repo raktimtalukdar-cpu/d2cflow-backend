@@ -1,7 +1,7 @@
 """
 Catalog / PIM API — product catalog management with AI-assisted generation.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timezone
@@ -284,3 +284,95 @@ def bulk_update_products(updates: List[dict], user=Depends(get_current_user)):
             errors.append(str(e))
 
     return {"updated": updated, "errors": errors}
+
+
+# ------------------------------------------------------------------ #
+# PDF catalog upload — parse → preview → confirm save
+# ------------------------------------------------------------------ #
+
+@router.post("/import/pdf/preview")
+async def preview_pdf_catalog(file: UploadFile = File(...)):
+    """
+    Upload a PDF catalog. Returns extracted products for merchant review.
+    Nothing is saved until /import/pdf/confirm is called.
+    """
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+
+    contents = await file.read()
+    if len(contents) > 20 * 1024 * 1024:  # 20MB limit
+        raise HTTPException(status_code=400, detail="PDF too large. Max 20MB.")
+
+    try:
+        from ..catalog.pdf_importer import parse_pdf_catalog
+        products = parse_pdf_catalog(contents)
+    except ImportError:
+        raise HTTPException(status_code=503, detail="PDF parsing not available. Run: pip install pdfplumber")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse PDF: {e}")
+
+    if not products:
+        raise HTTPException(
+            status_code=422,
+            detail="No products found in this PDF. The PDF needs product names and prices (₹ or INR format)."
+        )
+
+    return {
+        "preview": products,
+        "count": len(products),
+        "message": f"Found {len(products)} products. Review and confirm to add them to your catalog.",
+    }
+
+
+class ConfirmPdfImport(BaseModel):
+    products: List[dict]  # The previewed products, optionally edited by merchant
+
+
+@router.post("/import/pdf/confirm")
+def confirm_pdf_import(payload: ConfirmPdfImport, user=Depends(get_current_user)):
+    """Save the reviewed PDF products into the catalog."""
+    db = get_db()
+    tenant_id = get_tenant_id(user)
+    created, skipped = 0, 0
+
+    for p in payload.products:
+        name = (p.get("name") or "").strip()
+        price = float(p.get("price") or 0)
+        if not name or price <= 0:
+            skipped += 1
+            continue
+
+        # Create product
+        prod_result = db.table("products").insert({
+            "tenant_id": tenant_id,
+            "name": name,
+            "description": p.get("description", ""),
+            "category": p.get("category", ""),
+            "is_active": True,
+            "tags": ["pdf_import"],
+        }).execute()
+        product_id = prod_result.data[0]["id"]
+
+        # Generate SKU if not provided
+        sku_code = (p.get("sku") or "").strip()
+        if not sku_code:
+            import re as _re
+            sku_code = _re.sub(r"[^A-Z0-9]", "-", name.upper())[:20].strip("-") + f"-{product_id[:6].upper()}"
+
+        mrp = float(p.get("mrp") or price)
+        db.table("skus").upsert({
+            "sku": sku_code,
+            "product_id": product_id,
+            "name": name,
+            "selling_price": price,
+            "mrp": mrp if mrp >= price else price,
+            "qty_on_hand": int(p.get("stock") or 0),
+        }, on_conflict="sku").execute()
+
+        created += 1
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "message": f"{created} products added to your catalog.",
+    }
