@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import QRCode from 'react-qr-code';
 import { addOrder } from '../data/orders';
 import { getProducts } from '../data/products';
 import { toast } from '../components/Toast';
@@ -26,7 +27,7 @@ function truncate(t, n = 60) { return t && t.length > n ? t.slice(0, n) + '…' 
 // ── QR Connect Screen ─────────────────────────────────────────────────────────
 
 function QRConnectScreen({ onConnected }) {
-  const [status, setStatus] = useState('idle'); // idle | starting | qr | connected
+  const [status, setStatus] = useState('starting'); // idle | starting | qr | connected
   const [qrB64, setQrB64] = useState(null);
   const pollRef = useRef(null);
 
@@ -95,7 +96,7 @@ function QRConnectScreen({ onConnected }) {
         {status === 'qr' && qrB64 && (
           <div>
             <div style={{ background: '#fff', border: '2px solid #25D366', borderRadius: 12, padding: 12, display: 'inline-block', marginBottom: 16 }}>
-              <img src={`data:image/png;base64,${qrB64}`} alt="WhatsApp QR Code" style={{ width: 220, height: 220, display: 'block' }} />
+              <QRCode value={qrB64.startsWith('qr:') ? qrB64.slice(3) : qrB64} size={220} />
             </div>
             <div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6 }}>
               Open WhatsApp → <strong>Linked Devices</strong> → <strong>Link a Device</strong> → Scan this code

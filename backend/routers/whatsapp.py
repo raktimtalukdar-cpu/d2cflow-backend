@@ -33,14 +33,10 @@ from pydantic import BaseModel
 
 # ── Config (all overridable via env vars) ─────────────────────────────────────
 
-_DEFAULT_BRIDGE_DIR = os.path.expanduser(
-    "~/Documents/whatsapp-mcp/whatsapp-bridge"
-)
-BRIDGE_BINARY: str = os.environ.get(
-    "WHATSAPP_BRIDGE_BINARY",
-    os.path.join(_DEFAULT_BRIDGE_DIR, "whatsapp-bridge"),
-)
-BRIDGE_DIR: str = os.environ.get("WHATSAPP_BRIDGE_DIR", _DEFAULT_BRIDGE_DIR)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_DEFAULT_BRIDGE_DIR = os.path.join(_PROJECT_ROOT, "whatsapp-bridge")
+BRIDGE_BINARY: str = os.environ.get("WHATSAPP_BRIDGE_BINARY") or os.path.join(_DEFAULT_BRIDGE_DIR, "start.sh")
+BRIDGE_DIR: str = os.environ.get("WHATSAPP_BRIDGE_DIR") or _DEFAULT_BRIDGE_DIR
 BRIDGE_API: str = os.environ.get("WHATSAPP_BRIDGE_API", "http://localhost:8080")
 WHATSAPP_DB_PATH: str = os.environ.get(
     "WHATSAPP_DB_PATH",
@@ -163,6 +159,22 @@ def _is_bridge_running() -> bool:
 
 
 def _is_bridge_authenticated() -> bool:
+    # First try the Baileys Node bridge /api/status endpoint
+    try:
+        resp = httpx.get(f"{BRIDGE_API}/api/status", timeout=2.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("connected"):
+                return True
+            # Update QR if available from Baileys
+            if data.get("qr"):
+                global _qr_code_b64, _wa_connected
+                _qr_code_b64 = f"qr:{data['qr']}"
+                _wa_connected = False
+            return False
+    except Exception:
+        pass
+    # Fallback: check whatsmeow SQLite (Go bridge)
     for path in [WHATSAPP_DEVICE_DB, os.path.join(BRIDGE_DIR, "whatsapp.db")]:
         try:
             conn = sqlite3.connect(path)
@@ -203,9 +215,21 @@ def _bridge_stdout_reader(proc: subprocess.Popen) -> None:  # type: ignore[type-
         for raw_line in proc.stdout:  # type: ignore[union-attr]
             line = raw_line.decode("utf-8", errors="replace").rstrip()
             logger.debug("[bridge] %s", line)
-            if any(kw in line.lower() for kw in ("logged in", "connected", "already logged in", "client is logged in")):
+            # Baileys: "[Bridge] Connected as +91..."
+            if any(kw in line.lower() for kw in ("connected as", "logged in", "connected", "already logged in", "client is logged in")):
                 _wa_connected = True
                 _qr_code_b64 = None
+            # Baileys: "[Bridge] QR code ready"
+            if "qr code ready" in line.lower():
+                # Poll the status endpoint for the actual QR data
+                try:
+                    resp = httpx.get(f"{BRIDGE_API}/api/status", timeout=3.0)
+                    qr_data = resp.json().get("qr")
+                    if qr_data:
+                        _qr_code_b64 = f"qr:{qr_data}"
+                        _wa_connected = False
+                except Exception:
+                    pass
             qr = _parse_qr_from_output(line)
             if qr:
                 _qr_code_b64 = qr
@@ -2362,3 +2386,103 @@ async def share_catalog_item(payload: SharePayload):
         "failed": failed,
         "tracking": payload.track_reply,
     }
+
+
+# ------------------------------------------------------------------ #
+# Baileys bridge incoming message webhook
+# Called by the Node.js bridge when a customer sends a message
+# ------------------------------------------------------------------ #
+
+class IncomingMessagePayload(BaseModel):
+    from_: str = ""
+    body: str = ""
+    timestamp: Optional[int] = None
+    message_id: Optional[str] = None
+    order_data: Optional[dict] = None
+
+    class Config:
+        populate_by_name = True
+        fields = {"from_": "from"}
+
+
+@router.post("/incoming")
+async def incoming_message(payload: IncomingMessagePayload):
+    """
+    Receives messages forwarded by the Baileys Node.js bridge.
+    Processes them through the same order-intent detection pipeline.
+    """
+    global _wa_connected, _qr_code_b64
+    _wa_connected = True  # If messages are coming in, we're connected
+    _qr_code_b64 = None
+
+    from_jid = payload.from_ if "@" in payload.from_ else f"{payload.from_}@s.whatsapp.net"
+    body = payload.body or ""
+
+    # Handle WhatsApp order (product card tap)
+    if payload.order_data:
+        items = payload.order_data.get("product_items") or payload.order_data.get("products", [])
+        if items:
+            total = sum(
+                float(i.get("item_price", 0) or i.get("price", 0)) * int(i.get("quantity", 1))
+                for i in items
+            )
+            fake_order = {
+                "jid": from_jid,
+                "customer_name": from_jid.split("@")[0],
+                "product_name": items[0].get("product_retailer_id", "Product"),
+                "price": total,
+                "qty": sum(int(i.get("quantity", 1)) for i in items),
+            }
+            _pending_broadcasts.append({
+                "id": str(uuid.uuid4()),
+                "jid": from_jid,
+                "customer_name": fake_order["customer_name"],
+                "product_name": fake_order["product_name"],
+                "price": total,
+                "qty": fake_order["qty"],
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+                "source": "product_card",
+                "confirmed": False,
+                "last_confirmed_message_ts": None,
+            })
+            _persist_all()
+            return {"status": "order_queued", "total": total}
+
+    # Text message — run through order intent detection
+    if body:
+        body_lower = body.lower().strip()
+        YES_WORDS = {"yes", "haan", "ha", "ok", "okay", "confirm", "order", "buy", "yes!", "yep"}
+
+        if body_lower in YES_WORDS:
+            # Find a pending broadcast for this JID and confirm it
+            for bc in reversed(_pending_broadcasts):
+                if bc["jid"] == from_jid and not bc.get("confirmed"):
+                    result = _create_confirmed_order_from_broadcast(from_jid, bc)
+                    if result:
+                        bc["confirmed"] = True
+                        bc["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+                        _persist_all()
+                    return {"status": "order_confirmed"}
+        else:
+            # Add to monitored chats and run scan
+            if not any(c["chat_jid"] == from_jid for c in _monitored_chats):
+                _monitored_chats.append({
+                    "chat_jid": from_jid,
+                    "chat_name": from_jid.split("@")[0],
+                    "customer_name": from_jid.split("@")[0],
+                    "added_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "baileys_incoming",
+                })
+                _persist_all()
+
+    return {"status": "ok"}
+
+
+@router.post("/bridge-connected")
+async def bridge_connected(payload: dict):
+    """Called by Baileys bridge when WhatsApp connects successfully."""
+    global _wa_connected, _qr_code_b64
+    _wa_connected = True
+    _qr_code_b64 = None
+    logger.info("WhatsApp bridge connected: phone=%s", payload.get("phone"))
+    return {"status": "noted"}

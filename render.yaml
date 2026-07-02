@@ -2,7 +2,7 @@ services:
   - type: web
     name: d2cflow-backend
     runtime: python
-    buildCommand: pip install --no-cache-dir -r requirements.txt
+    buildCommand: pip install --no-cache-dir -r requirements.txt && npm install --production --prefix whatsapp-bridge
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SHOPIFY_CLIENT_ID
