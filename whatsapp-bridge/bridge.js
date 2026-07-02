@@ -11,7 +11,6 @@
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const express = require('express');
 const qrcode = require('qrcode-terminal');
-const http = require('http');
 const path = require('path');
 const fs = require('fs');
 
@@ -123,24 +122,16 @@ async function connect() {
 
 // ── Forward events to Python ───────────────────────────────────────────────
 
-function notifyPython(path, data) {
-  return new Promise((resolve) => {
-    const payload = JSON.stringify(data);
-    const url = new URL(PYTHON_BACKEND + path);
-    const req = http.request({
-      hostname: url.hostname,
-      port: url.port || 80,
-      path: url.pathname,
+async function notifyPython(endpoint, data) {
+  try {
+    await fetch(PYTHON_BACKEND + endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-    }, (res) => {
-      res.resume();
-      resolve();
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
     });
-    req.on('error', () => resolve());
-    req.write(payload);
-    req.end();
-  });
+  } catch (e) {
+    console.error('[Bridge] notifyPython failed:', e.message);
+  }
 }
 
 // ── HTTP API ────────────────────────────────────────────────────────────────
