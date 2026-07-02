@@ -150,7 +150,7 @@ _bridge_lock = threading.Lock()
 
 def _is_bridge_running() -> bool:
     try:
-        httpx.post(f"{BRIDGE_API}/api/send", json={}, timeout=1.0)
+        httpx.get(f"{BRIDGE_API}/", timeout=5.0)
         return True
     except httpx.ConnectError:
         return False
@@ -161,7 +161,7 @@ def _is_bridge_running() -> bool:
 def _is_bridge_authenticated() -> bool:
     # First try the Baileys Node bridge /api/status endpoint
     try:
-        resp = httpx.get(f"{BRIDGE_API}/api/status", timeout=2.0)
+        resp = httpx.get(f"{BRIDGE_API}/api/status", timeout=8.0)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("connected"):
@@ -1651,6 +1651,12 @@ async def get_qr():
 
 @router.post("/start-bridge")
 async def start_bridge_endpoint():
+    # If an external bridge URL is configured, don't try to spawn a local process
+    external = os.environ.get("WHATSAPP_BRIDGE_API", "").strip()
+    if external and external != "http://localhost:8080":
+        running = _is_bridge_running()
+        return {"started": False, "message": "Using external bridge", "authenticated": _is_bridge_authenticated(), "bridge_running": running}
+
     if _is_bridge_running():
         return {"started": False, "message": "Bridge already running", "authenticated": _is_bridge_authenticated()}
     if not os.path.exists(BRIDGE_BINARY):
@@ -1658,8 +1664,7 @@ async def start_bridge_endpoint():
             status_code=503,
             detail=(
                 "WhatsApp bridge cannot run on this server (serverless environment). "
-                "Run the bridge locally or on a persistent server, then set the "
-                "WHATSAPP_BRIDGE_API environment variable to its URL."
+                "Set the WHATSAPP_BRIDGE_API environment variable to your bridge URL."
             ),
         )
     started = _start_bridge()
