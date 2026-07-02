@@ -41,7 +41,7 @@ services:
     runtime: node
     rootDir: whatsapp-bridge
     buildCommand: npm install
-    startCommand: node bridge.js
+    startCommand: npm start
     envVars:
       - key: PYTHON_BACKEND
         sync: false
