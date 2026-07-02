@@ -57,8 +57,13 @@ function QRConnectScreen({ onConnected }) {
       await apiFetch('/api/whatsapp/start-bridge', { method: 'POST' });
       toast.info('Bridge starting… waiting for QR');
     } catch (e) {
-      toast.error(e.message || 'Failed to start bridge');
-      setStatus('idle');
+      const msg = e.message || 'Failed to start bridge';
+      if (msg.includes('serverless') || msg.includes('WHATSAPP_BRIDGE_API')) {
+        setStatus('serverless');
+      } else {
+        toast.error(msg);
+        setStatus('idle');
+      }
     }
   };
 
@@ -105,7 +110,18 @@ function QRConnectScreen({ onConnected }) {
           </div>
         )}
 
-        {status !== 'qr' && status !== 'idle' && (
+        {status === 'serverless' && (
+          <div style={{ background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 10, padding: '14px 16px', textAlign: 'left', marginTop: 4 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: '#92400e', marginBottom: 6 }}>⚠️ Bridge can't run on this server</div>
+            <div style={{ fontSize: 12, color: '#78350f', lineHeight: 1.7 }}>
+              This app is deployed on a serverless platform (Vercel) which can't run the WhatsApp bridge.<br /><br />
+              <strong>To fix:</strong> Deploy the <code>whatsapp-bridge/</code> folder to Railway or Render as a separate service, then add <code>WHATSAPP_BRIDGE_API=https://your-bridge-url</code> to your Vercel environment variables.<br /><br />
+              For local testing, use <strong>localhost:5174</strong> — the bridge runs automatically there.
+            </div>
+          </div>
+        )}
+
+        {status !== 'qr' && status !== 'idle' && status !== 'serverless' && (
           <div style={{ marginTop: 20, fontSize: 12, color: '#94a3b8' }}>Auto-checking connection status…</div>
         )}
       </div>

@@ -1654,7 +1654,14 @@ async def start_bridge_endpoint():
     if _is_bridge_running():
         return {"started": False, "message": "Bridge already running", "authenticated": _is_bridge_authenticated()}
     if not os.path.exists(BRIDGE_BINARY):
-        raise HTTPException(status_code=503, detail=f"Bridge binary not found at {BRIDGE_BINARY}.")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "WhatsApp bridge cannot run on this server (serverless environment). "
+                "Run the bridge locally or on a persistent server, then set the "
+                "WHATSAPP_BRIDGE_API environment variable to its URL."
+            ),
+        )
     started = _start_bridge()
     return {"started": started, "message": "Bridge started." if started else "Failed to start bridge."}
 
