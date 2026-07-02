@@ -35,3 +35,15 @@ services:
         sync: false
       - key: D2CFLOW_STORE_DIR
         sync: false
+
+  - type: web
+    name: d2cflow-wa-bridge
+    runtime: node
+    rootDir: whatsapp-bridge
+    buildCommand: npm install
+    startCommand: node bridge.js
+    envVars:
+      - key: PYTHON_BACKEND
+        sync: false
+      - key: LOG_LEVEL
+        value: info
